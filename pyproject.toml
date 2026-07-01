@@ -38,5 +38,8 @@ src = ["src"]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option"]
+
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]

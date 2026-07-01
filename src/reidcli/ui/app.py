@@ -236,7 +236,7 @@ class _ScrollableOutputControl(FormattedTextControl):
 class ChatApp:
     """Owns the full-screen layout, input handling, and turn dispatch."""
 
-    def __init__(self, orchestrator: Orchestrator) -> None:
+    def __init__(self, orchestrator: Orchestrator, initial_prompt: str | None = None) -> None:
         self.orchestrator = orchestrator
         self.capture = _ConsoleCapture()
         self.output = _OutputPane()
@@ -244,6 +244,7 @@ class ChatApp:
         self._thinking = {"flag": False, "start": 0.0, "gerund": "", "last_swap": 0.0}
         self._approving: dict = {"flag": False, "prompt": "", "result": False, "event": None}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._initial_prompt = (initial_prompt or "").strip()
 
         self._buf = Buffer(
             history=self._history,
@@ -268,6 +269,11 @@ class ChatApp:
     async def main(self) -> int:
         self._loop = asyncio.get_running_loop()
         self.app.create_background_task(self._spinner_ticker())
+        if self._initial_prompt:
+            # Run as a background task rather than awaiting inline, so the app
+            # starts rendering (banner, empty input box) immediately instead
+            # of appearing to hang until the injected prompt's turn finishes.
+            self.app.create_background_task(self._submit_text(self._initial_prompt))
         result = await self.app.run_async()
         return result or 0
 
@@ -533,6 +539,13 @@ class ChatApp:
         if not text.strip():
             return
         self._buf.reset()
+        await self._submit_text(text)
+
+    async def _submit_text(self, text: str) -> None:
+        """Run one turn for `text` — shared by the Enter key binding and by
+        an injected initial prompt (`reidcli "<prompt>"` / piped stdin)."""
+        if not text.strip():
+            return
 
         if text.startswith("/"):
             outcome = self._run_slash(text)
@@ -611,13 +624,18 @@ class ChatApp:
             event.set()
 
 
-def run(orchestrator: Orchestrator) -> int:
+def run(orchestrator: Orchestrator, initial_prompt: str | None = None) -> int:
     """Entry point: build and run the full-screen chat app.
 
     Reuses an already-resumed session or starts fresh (matching the prior
     ui/repl.py::repl behavior). Returns 0 on a clean exit.
+
+    If `initial_prompt` is given, it's submitted as the first turn as soon as
+    the app starts rendering — the interactive equivalent of typing it into
+    the box and pressing Enter, so the session stays open afterward (unlike
+    `reidcli exec`, which runs one prompt headless and exits).
     """
-    chat = ChatApp(orchestrator)
+    chat = ChatApp(orchestrator, initial_prompt=initial_prompt)
     original_console = render.console
     render.console = chat.capture.console
     try:

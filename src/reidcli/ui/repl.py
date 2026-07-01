@@ -10,5 +10,5 @@ from reidcli.runtime.orchestrator import Orchestrator
 from reidcli.ui import app
 
 
-def repl(orchestrator: Orchestrator) -> int:
-    return app.run(orchestrator)
+def repl(orchestrator: Orchestrator, initial_prompt: str | None = None) -> int:
+    return app.run(orchestrator, initial_prompt=initial_prompt)

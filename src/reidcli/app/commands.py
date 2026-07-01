@@ -7,6 +7,7 @@ to runtime/ui/automation layers.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -32,12 +33,58 @@ app = typer.Typer(
     add_completion=False,
 )
 
+_PROMPT_ARG_HELP = (
+    "Inject this as the first prompt right after launch — same as typing it into the "
+    "box and pressing Enter, except the session stays interactive afterward (unlike "
+    "`reidcli exec`, which runs once and exits). If omitted and stdin isn't a "
+    "terminal (piped input), stdin is read as the prompt instead."
+)
+_PROMPT_FILE_HELP = "Read the prompt from a text file instead of the command line (e.g. a long or multi-line prompt)."
+
+
+def _stdin_prompt() -> str | None:
+    if sys.stdin.isatty():
+        return None
+    data = sys.stdin.read().strip()
+    return data or None
+
+
+def _resolve_prompt(prompt: str | None, prompt_file: Path | None, *, fall_back_to_stdin: bool) -> str | None:
+    if prompt and prompt_file:
+        render.print_error("pass either a prompt argument or --file, not both")
+        raise typer.Exit(code=1)
+    if prompt_file:
+        try:
+            text = prompt_file.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            render.print_error(f"failed to read prompt file {prompt_file}: {exc}")
+            raise typer.Exit(code=1) from exc
+        if not text:
+            render.print_error(f"prompt file is empty: {prompt_file}")
+            raise typer.Exit(code=1)
+        return text
+    if prompt:
+        return prompt
+    return _stdin_prompt() if fall_back_to_stdin else None
+
 
 @app.callback(invoke_without_command=True)
-def _main(ctx: typer.Context) -> None:
+def _main(
+    ctx: typer.Context,
+    prompt_file: Path | None = typer.Option(None, "--file", "-f", help=_PROMPT_FILE_HELP),
+) -> None:
     """With no subcommand, launch interactive mode."""
+    # No positional prompt argument here on purpose: a Typer/Click group with
+    # both subcommands and its own positional argument resolves ambiguously —
+    # tested and confirmed it swallows subcommand names ("reidcli version",
+    # "reidcli sessions", ...) as the argument instead of dispatching to
+    # them. `--file`/`-f` is a named option, not positional, so it doesn't
+    # have that problem. `reidcli interactive "<prompt>"` is the unambiguous
+    # way to inject literal prompt text; bare `reidcli` still just launches
+    # empty (or reads piped stdin), as before.
     if ctx.invoked_subcommand is None:
-        repl(build_orchestrator())
+        initial = _resolve_prompt(None, prompt_file, fall_back_to_stdin=True)
+        repl(build_orchestrator(), initial_prompt=initial)
 
 
 def build_orchestrator(config: Config | None = None) -> Orchestrator:
@@ -48,17 +95,26 @@ def build_orchestrator(config: Config | None = None) -> Orchestrator:
 
 
 @app.command()
-def interactive() -> None:
+def interactive(
+    prompt: str | None = typer.Argument(None, help=_PROMPT_ARG_HELP),
+    prompt_file: Path | None = typer.Option(None, "--file", "-f", help=_PROMPT_FILE_HELP),
+) -> None:
     """Launch interactive mode (default)."""
-    repl(build_orchestrator())
+    initial = _resolve_prompt(prompt, prompt_file, fall_back_to_stdin=True)
+    repl(build_orchestrator(), initial_prompt=initial)
 
 
 @app.command(name="exec")
 def exec_(
-    prompt: str = typer.Argument(..., help="Prompt to run non-interactively."),
+    prompt: str | None = typer.Argument(None, help="Prompt to run non-interactively."),
+    prompt_file: Path | None = typer.Option(None, "--file", "-f", help=_PROMPT_FILE_HELP),
 ) -> None:
     """Run a single prompt non-interactively (headless)."""
-    raise typer.Exit(code=exec_run(build_orchestrator(), prompt))
+    resolved = _resolve_prompt(prompt, prompt_file, fall_back_to_stdin=False)
+    if not resolved:
+        render.print_error("usage: reidcli exec \"<prompt>\" (or --file <path>)")
+        raise typer.Exit(code=1)
+    raise typer.Exit(code=exec_run(build_orchestrator(), resolved))
 
 
 @app.command()

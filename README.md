@@ -69,6 +69,9 @@ or just start talking. The stub provider is offline and exercisable without API 
 | Command | Purpose |
 |---|---|
 | `reidcli` | Launch interactive mode (default — no subcommand needed) |
+| `reidcli interactive "<prompt>"` | Launch interactive mode and immediately submit `<prompt>` as the first turn — session stays open afterward |
+| `reidcli --file <path>` / `-f` | Same idea, but read the initial prompt from a text file — works with `interactive`, `exec`, and the bare/no-subcommand form |
+| `<cmd> \| reidcli` | Pipe a prompt via stdin as the initial turn (only applies to the bare/no-subcommand form) |
 | `reidcli exec "<prompt>"` | Run a single prompt non-interactively (headless) |
 | `reidcli resume <session-id>` | Resume a prior session, then enter interactive mode |
 | `reidcli sessions` | List all sessions |
