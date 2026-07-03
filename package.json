@@ -1,0 +1,41 @@
+{
+  "name": "reidverse-cli",
+  "version": "2.0.0",
+  "description": "Terminal-native personal intelligence and coding CLI (agent-first runtime)",
+  "bin": {
+    "reidverse-cli": "bin/reidverse-cli.js",
+    "reidcli": "bin/reidverse-cli.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "src",
+    "pyproject.toml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "preferGlobal": true,
+  "license": "MIT",
+  "author": "Reid",
+  "keywords": [
+    "cli",
+    "agent",
+    "ai",
+    "reidcli",
+    "terminal"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryyReid/ReidCLI.git"
+  }
+}

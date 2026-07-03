@@ -32,7 +32,21 @@ phase plans.
 
 ## Quick start
 
-### 1. Create a venv and install
+### Option A: install via npm
+
+Requires Python 3.12+ on your `PATH` (the npm package is a thin wrapper that
+pip-installs the Python package on `npm install`).
+
+```powershell
+npm install -g reidverse-cli
+```
+
+This gives you both `reidverse-cli` and `reidcli` on your `PATH`. Skip to
+[step 2](#2-verify-the-install) to check it worked.
+
+### Option B: install from source
+
+#### 1. Create a venv and install
 
 ```powershell
 python -m venv .venv
