@@ -44,11 +44,16 @@ class ProviderRegistry:
 
 def default_registry(config: Config) -> ProviderRegistry:
     """Build the default registry. Stub is always registered and stays the
-    default; Anthropic auto-registers under its own name if ANTHROPIC_* env
-    vars are set (available via `/use anthropic`), but never overrides the
-    default. Providers persisted by `/connect` are layered on top by
-    `reidcli.provider.store.load_into`.
+    default; Anthropic and OpenAI auto-register under their own names when the
+    matching env vars are set (available via `/use`), but never override the
+    default. Every other configured provider is built from its `kind` so a
+    subagent can request it by name. Providers persisted by `/connect` are
+    layered on top by `reidcli.provider.store.load_into`.
     """
+    # Lazy import: store.py imports ProviderRegistry from this module, so a
+    # top-level import here would be circular.
+    from reidcli.provider.store import ProviderRecord, build_provider
+
     reg = ProviderRegistry()
     reg.register("stub", StubProvider())
 
@@ -57,8 +62,27 @@ def default_registry(config: Config) -> ProviderRegistry:
         reg.register("anthropic", anthropic)
         log.debug("auto-registered anthropic provider from env vars")
 
-    for name in config.providers:
-        if name in ("stub", "anthropic"):
+    from reidcli.provider.openai import OpenAIProvider  # noqa: PLC0415
+    openai = OpenAIProvider.from_env()
+    if openai is not None:
+        reg.register("openai", openai)
+        log.debug("auto-registered openai provider from env vars")
+
+    for name, pc in config.providers.items():
+        if name == "stub" or reg.has(name):
             continue
-        log.warning("provider '%s' configured but no client implementation yet (TODO)", name)
+        kind = (pc.kind or name).strip()
+        try:
+            provider = build_provider(ProviderRecord(
+                name=name,
+                kind=kind,
+                base_url=pc.base_url or "",
+                api_key=pc.api_key.get_secret_value() if pc.api_key else "",
+                default_model=pc.default_model,
+            ))
+        except (ValueError, TypeError):
+            log.warning("provider '%s' (kind=%s) configured but could not be built; skipping", name, kind)
+            continue
+        reg.register(name, provider)
+        log.debug("registered configured provider: %s (kind=%s)", name, kind)
     return reg

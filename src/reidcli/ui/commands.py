@@ -26,6 +26,29 @@ from reidcli.workflows.models import Workflow
 
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
+# /recap and /review don't do their own work here — they expand into a normal
+# user turn (see ui.app's handling of the "recap-run"/"review-run:<pr>"
+# outcomes below) so they get the full existing turn pipeline for free:
+# conversation history already in state.messages, the thinking spinner, and
+# (for /review) the same policy-gated run_command tool call as any other
+# shell command, prompting for approval in balanced/strict mode exactly like
+# a user-typed `gh pr diff ...` would.
+RECAP_PROMPT = (
+    "Give a one-line recap of what we've accomplished in this session so far. "
+    "Respond with exactly one line, no preamble."
+)
+
+
+def review_prompt(pr: str) -> str:
+    return (
+        f"Review GitHub PR {pr}. Use run_command to fetch context: `gh pr view {pr}` for the "
+        f"description and `gh pr diff {pr}` for the diff (requires the gh CLI installed and "
+        "authenticated). Then critique the diff for correctness bugs first, then reuse/"
+        "simplification/efficiency issues, most severe first. For your own uncommitted working "
+        "diff instead of a remote PR, just ask directly — this command is for a PR already "
+        "pushed to GitHub."
+    )
+
 # (command, args-hint, description, help-group). Order here is display order.
 SLASH_COMMANDS: list[tuple[str, str, str, str]] = [
     ("/status", "", "show current session + mode + tasks", "Session"),
@@ -33,6 +56,9 @@ SLASH_COMMANDS: list[tuple[str, str, str, str]] = [
     ("/resume", "<id>", "resume a prior session", "Session"),
     ("/transcript", "[n]", "show last n messages (default 20)", "Session"),
     ("/rewind", "", "drop the last turn from state", "Session"),
+    ("/rename", "<title>", "rename the current session", "Session"),
+    ("/recap", "", "generate a one-line session recap now", "Session"),
+    ("/review", "<pr>", "review a GitHub pull request via gh + the agent (for your working diff, just ask directly)", "Session"),
     ("/tasks", "[status]", "list tasks (filter: pending|active|completed|failed|blocked)", "Tasks"),
     ("/goal", "<subcommand> ...", "manage session goals (type '/goal ' for subcommands)", "Goals"),
     ("/model", "<name>", "set model for the session", "Config & Policy"),

@@ -37,7 +37,7 @@ from prompt_toolkit.formatted_text.utils import split_lines
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, ScrollOffsets, VSplit, Window
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu

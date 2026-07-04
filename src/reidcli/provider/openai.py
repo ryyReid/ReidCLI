@@ -10,6 +10,7 @@ so tool passing is a straight forward.
 """
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from reidcli.diagnostics.logger import get_logger
@@ -33,6 +34,17 @@ class OpenAIProvider(BaseProvider):
         self.api_key = api_key
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.default_model = default_model or self.DEFAULT_MODEL
+
+    @classmethod
+    def from_env(cls) -> "OpenAIProvider | None":
+        """Build from OPENAI_* env vars. Returns None if no API key is set, so
+        it can be auto-registered under `openai` alongside anthropic."""
+        key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not key:
+            return None
+        base = os.environ.get("OPENAI_BASE_URL", "").strip()
+        model = os.environ.get("OPENAI_MODEL", "").strip()
+        return cls(api_key=key, base_url=base, default_model=model)
 
     def _to_openai_messages(self, messages: list[Message]) -> list[dict]:
         out: list[dict] = []

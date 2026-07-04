@@ -1,6 +1,6 @@
 {
   "name": "reidverse-cli",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Terminal-native personal intelligence and coding CLI (agent-first runtime)",
   "bin": {
     "reidverse-cli": "bin/reidverse-cli.js",

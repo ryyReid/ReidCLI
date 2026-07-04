@@ -13,6 +13,9 @@ from reidcli.policy.models import PermissionMode
 
 class ProviderConfig(BaseModel):
     name: str
+    # Which client to build (anthropic/openai/openai-compatible/ollama). Empty
+    # means "same as name" — fine for the built-in kinds whose name matches.
+    kind: str = ""
     base_url: str | None = None
     api_key: SecretStr | None = None
     default_model: str = ""
