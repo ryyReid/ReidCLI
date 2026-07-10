@@ -2,7 +2,7 @@
 
 A Claude-Code-style skin: a rounded welcome box, ⏺ bullets for assistant turns
 and tool calls, ⎿ connectors for tool results, and a low-noise status line.
-Rendered in ReidVerse-Cli's red palette. Assistant output stays markdown with
+Rendered in ReidSH's red palette. Assistant output stays markdown with
 syntax highlighting; tool calls hang under a bullet with their result.
 """
 from __future__ import annotations
@@ -93,23 +93,26 @@ def _bullet_grid(marker: Text, body) -> Table:  # type: ignore[no-untyped-def]
 # Mascot ASCII art, printed to the left of the welcome panel in the empty
 # space there. Purely decorative — kept as its own constant so it's easy to
 # swap out.
-_MASCOT = r"""                 #####
-            ###############
-         ######################
-       ##########################
-      ##########  ##  ###########
-    ##### ####   ##################
-   ######      #####################
-  ### ##         ###################
-  ####### ###   #####################
- ############################### ####
- ############### ###################
- ## ## ## ###################  #####
-    ##   ##  ################## ####
-   #          ############### ##  ##
-               ##### ### ### ##  ##
-                 ##   ## ##  ##
-                  ##   ##    ##"""
+_MASCOT = r"""                    "...'...                     
+               ^l'+??!_????:^'...:`"             
+            ,`????????????????"'......           
+          r^???????i-+??????:?-;Il"...           
+          .^`_???+,.i`..'<,???????~..." ^        
+        .-??<.....?l-""?????i::i???l>~..         
+      .`?_~>>'`";;.^'i???????????~!-?>.."        
+     ^.:???~^~??>!ll_??-???__??+.!~-.''. :       
+     ^..i....!;Iii!!;!????????<l?+,`-<...^       
+     `...""..",^";'....;!l!<>??^??>!<.i.`.       
+      `.".      ..^."`;-~~?,?.I?.I?.i>..  ?      
+       ...         `.'....+?.I.+?._'.'.".x       
+          x         :.....<.;..>? `.`..' -       
+                     :.....~...:'.`. '.          
+                      .....I..."....  .          
+                      ..........'.'.  `          
+                      .......... .i.             
+                       .^l..^.. .                
+                      l `.. .                    
+                       ~       """
 
 
 def banner() -> None:
