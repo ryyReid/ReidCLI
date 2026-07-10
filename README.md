@@ -65,7 +65,7 @@ reidcli doctor
 Expected output:
 
 ```
-reidcli 2.0.1
+reidcli 2.0.2
 settings  <path> (found|missing)
 python    <path> (3.13.x)
 workspace <cwd>
