@@ -1,10 +1,9 @@
 {
-  "name": "reidverse-cli",
+  "name": "reidx",
   "version": "2.0.2",
   "description": "Terminal-native personal intelligence and coding CLI (agent-first runtime)",
   "bin": {
-    "reidverse-cli": "bin/reidverse-cli.js",
-    "reidcli": "bin/reidverse-cli.js"
+    "reid": "bin/reidx.js"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js"
@@ -31,11 +30,11 @@
     "cli",
     "agent",
     "ai",
-    "reidcli",
+    "reidx",
     "terminal"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ryyReid/ReidCLI.git"
+    "url": "git+https://github.com/ryyReid/ReidX.git"
   }
 }

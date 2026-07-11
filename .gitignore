@@ -7,8 +7,8 @@ dist/
 .venv/
 venv/
 
-# ReidCLI local state (do not commit)
-.reidcli/
+# ReidX local state (do not commit)
+.reidx/
 *.session.json
 *.tasks.json
 

@@ -10,7 +10,7 @@
   "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
-  "reidcli": {
+  "reidx": {
     "default_provider": "anthropic",
     "log_level": "INFO",
     "policy": {

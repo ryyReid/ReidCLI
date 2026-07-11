@@ -16,16 +16,16 @@ function main() {
   const python = findPython();
   if (!python) {
     console.warn(
-      "reidverse-cli: no Python 3.12+ interpreter found on PATH — skipping automatic setup.\n" +
+      "reidx: no Python 3.12+ interpreter found on PATH — skipping automatic setup.\n" +
         "Install Python, then run: pip install --user " + JSON.stringify(PACKAGE_ROOT)
     );
     return;
   }
 
-  console.log("reidverse-cli: installing Python package (reidcli) via pip...");
+  console.log("reidx: installing Python package (reidx) via pip...");
   if (!pipInstall(python)) {
     console.warn(
-      "reidverse-cli: automatic `pip install` failed.\n" +
+      "reidx: automatic `pip install` failed.\n" +
         "Run it manually: " +
         `${python.cmd} ${python.args.join(" ")} -m pip install --user ${JSON.stringify(PACKAGE_ROOT)}`
     );

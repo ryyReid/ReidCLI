@@ -1,18 +1,18 @@
-"""DeepReid pipeline tests: role sequencing, revision-loop cap, output format."""
+﻿"""DeepReid pipeline tests: role sequencing, revision-loop cap, output format."""
 from __future__ import annotations
 
 import uuid
 from pathlib import Path
 
-from reidcli.config.models import default_config
-from reidcli.deepreid.pipeline import (
+from reidx.config.models import default_config
+from reidx.deepreid.pipeline import (
     MAX_REVISION_ROUNDS,
     RESEARCHER_MAX_STEPS,
     format_markdown,
     run_deepreid,
 )
-from reidcli.provider.base import BaseProvider, ProviderResponse, ToolCall
-from reidcli.provider.stub import StubProvider
+from reidx.provider.base import BaseProvider, ProviderResponse, ToolCall
+from reidx.provider.stub import StubProvider
 
 
 def test_stub_pipeline_runs_without_revision(tmp_path: Path) -> None:
@@ -103,7 +103,7 @@ class _EndlessToolCallProvider(BaseProvider):
 
 
 def test_researcher_gets_larger_step_budget_than_default(tmp_path: Path) -> None:
-    from reidcli.deepreid.pipeline import _RESEARCHER_PROMPT, _researcher_registry, _run_role
+    from reidx.deepreid.pipeline import _RESEARCHER_PROMPT, _researcher_registry, _run_role
 
     provider = _EndlessToolCallProvider()
     cfg = default_config()

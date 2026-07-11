@@ -1,5 +1,5 @@
 [project]
-name = "reidcli"
+name = "reidx"
 version = "2.0.1"
 description = "Terminal-native personal intelligence and coding CLI (agent-first runtime)"
 readme = "README.md"
@@ -20,14 +20,14 @@ dev = [
 ]
 
 [project.scripts]
-reidcli = "reidcli.app.commands:app"
+reid = "reidx.app.commands:app"
 
 [build-system]
 requires = ["hatchling>=1.21"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/reidcli"]
+packages = ["src/reidx"]
 
 [tool.ruff]
 line-length = 100

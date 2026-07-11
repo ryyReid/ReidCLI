@@ -1,13 +1,13 @@
-"""Session + task store tests: round-trip, message persistence, resume."""
+﻿"""Session + task store tests: round-trip, message persistence, resume."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from reidcli.provider.base import Message
-from reidcli.session.models import Session, SessionStatus
-from reidcli.session.store import SessionStore
-from reidcli.tasks.models import TaskStatus
-from reidcli.tasks.store import TaskStore
+from reidx.provider.base import Message
+from reidx.session.models import Session, SessionStatus
+from reidx.session.store import SessionStore
+from reidx.tasks.models import TaskStatus
+from reidx.tasks.store import TaskStore
 
 
 def test_session_create_get_list(tmp_path: Path) -> None:

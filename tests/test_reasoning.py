@@ -1,5 +1,5 @@
-"""Tests for prompt-based chain-of-thought splitting."""
-from reidcli.runtime.reasoning import split_reasoning
+﻿"""Tests for prompt-based chain-of-thought splitting."""
+from reidx.runtime.reasoning import split_reasoning
 
 
 def test_splits_think_block():

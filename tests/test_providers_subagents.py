@@ -1,19 +1,19 @@
-"""Tests for /connect provider persistence, spawn_agent tool, SubagentManager."""
+﻿"""Tests for /connect provider persistence, spawn_agent tool, SubagentManager."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from reidcli.config.models import default_config
-from reidcli.policy.engine import PolicyEngine
-from reidcli.provider.registry import ProviderRegistry
-from reidcli.provider.store import ProviderRecord, ProviderStore, load_into
-from reidcli.provider.stub import StubProvider
-from reidcli.runtime.state import RuntimeState
-from reidcli.runtime.subagent import SubagentManager
-from reidcli.session.models import Session
-from reidcli.tools import default_registry
-from reidcli.tools.base import ToolContext
-from reidcli.tools.spawn_agent import SpawnAgentTool
+from reidx.config.models import default_config
+from reidx.policy.engine import PolicyEngine
+from reidx.provider.registry import ProviderRegistry
+from reidx.provider.store import ProviderRecord, ProviderStore, load_into
+from reidx.provider.stub import StubProvider
+from reidx.runtime.state import RuntimeState
+from reidx.runtime.subagent import SubagentManager
+from reidx.session.models import Session
+from reidx.tools import default_registry
+from reidx.tools.base import ToolContext
+from reidx.tools.spawn_agent import SpawnAgentTool
 
 
 class _FakeOrchestrator:

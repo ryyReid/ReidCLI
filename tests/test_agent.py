@@ -1,15 +1,15 @@
-"""Agent loop tests: StubProvider turn, single assistant message, task outcome."""
+﻿"""Agent loop tests: StubProvider turn, single assistant message, task outcome."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from reidcli.config.models import default_config
-from reidcli.policy.engine import PolicyEngine
-from reidcli.provider.stub import StubProvider
-from reidcli.runtime.agent import Agent
-from reidcli.runtime.state import RuntimeState
-from reidcli.session.models import Session
-from reidcli.tools import default_registry
+from reidx.config.models import default_config
+from reidx.policy.engine import PolicyEngine
+from reidx.provider.stub import StubProvider
+from reidx.runtime.agent import Agent
+from reidx.runtime.state import RuntimeState
+from reidx.session.models import Session
+from reidx.tools import default_registry
 
 
 def _agent(tmp_path: Path) -> Agent:

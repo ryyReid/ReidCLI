@@ -1,13 +1,13 @@
-"""Tool registry + file tool tests: dispatch, path safety, unknown tools."""
+﻿"""Tool registry + file tool tests: dispatch, path safety, unknown tools."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from reidcli.config.models import PolicyConfig, default_config
-from reidcli.policy.engine import PolicyEngine
-from reidcli.policy.models import PermissionMode
-from reidcli.tools import default_registry
-from reidcli.tools.base import ToolContext
+from reidx.config.models import PolicyConfig, default_config
+from reidx.policy.engine import PolicyEngine
+from reidx.policy.models import PermissionMode
+from reidx.tools import default_registry
+from reidx.tools.base import ToolContext
 
 
 def _ctx(tmp_path: Path, approver=None) -> ToolContext:  # type: ignore[no-untyped-def]

@@ -1,4 +1,4 @@
-# ReidCLI
+﻿# ReidX
 
 Terminal-native personal intelligence and coding CLI with an agent-first runtime.
 
@@ -38,10 +38,10 @@ Requires Python 3.12+ on your `PATH` (the npm package is a thin wrapper that
 pip-installs the Python package on `npm install`).
 
 ```powershell
-npm install -g reidverse-cli
+npm install -g reidx
 ```
 
-This gives you both `reidverse-cli` and `reidcli` on your `PATH`. Skip to
+This gives you `reid` on your `PATH`. Skip to
 [step 2](#2-verify-the-install) to check it worked.
 
 ### Option B: install from source
@@ -59,17 +59,17 @@ pip install -e ".[dev]"
 ### 2. Verify the install
 
 ```powershell
-reidcli doctor
+reid doctor
 ```
 
 Expected output:
 
 ```
-reidcli 2.0.2
+reid 2.0.2
 settings  <path> (found|missing)
 python    <path> (3.13.x)
 workspace <cwd>
-storage   ~/.reidcli
+storage   ~/.reidx
 provider  stub
 mode      balanced
 providers stub (active), N tools
@@ -80,7 +80,7 @@ ok runtime importable; provider available
 ### 3. Run it
 
 ```powershell
-reidcli
+reid
 ```
 
 Drops you into the interactive TUI with a fresh session. Type `/` to see every
@@ -91,7 +91,7 @@ is offline and exercisable without API keys.
 
 ## The interactive TUI
 
-`reidcli` (with no subcommand, or `reidcli interactive`) launches a real
+`reid` (with no subcommand, or `reid interactive`) launches a real
 full-screen `prompt_toolkit` application — the same style of terminal
 ownership as `vim`/`htop` (alternate screen; your native scrollback is
 untouched and restored exactly as it was on exit). Rich handles all the
@@ -160,20 +160,20 @@ input, and layout around it.
 
 | Command | Purpose |
 |---|---|
-| `reidcli` | Launch the interactive TUI (default — no subcommand needed) |
-| `reidcli interactive "<prompt>"` | Launch interactive mode and immediately submit `<prompt>` as the first turn — session stays open afterward |
-| `reidcli --file <path>` / `-f` | Same idea, but read the initial prompt from a text file — works with `interactive`, `exec`, and the bare/no-subcommand form |
-| `reidcli --nyx` | Launch with the Nyx redteam/offensive-security persona active from the start (also on `interactive` and `exec`) |
-| `<cmd> \| reidcli` | Pipe a prompt via stdin as the initial turn (only applies to the bare/no-subcommand form) |
-| `reidcli exec "<prompt>"` | Run a single prompt non-interactively (headless) |
-| `reidcli deepreid "<task>"` | Plan + review `<task>` via the Researcher/Planner/Critic pipeline (headless, like `exec`) — no code changes, saves a Markdown plan |
-| `reidcli resume <session-id>` | Resume a prior session, then enter interactive mode |
-| `reidcli sessions` | List all sessions |
-| `reidcli config-show` | Show the effective (merged) configuration |
-| `reidcli tools` | List registered tools with risk levels |
-| `reidcli doctor` | Run environment diagnostics |
-| `reidcli version` | Show version and runtime info |
-| `reidcli --help` | Show the command surface |
+| `reid` | Launch the interactive TUI (default — no subcommand needed) |
+| `reid interactive "<prompt>"` | Launch interactive mode and immediately submit `<prompt>` as the first turn — session stays open afterward |
+| `reid --file <path>` / `-f` | Same idea, but read the initial prompt from a text file — works with `interactive`, `exec`, and the bare/no-subcommand form |
+| `reid --nyx` | Launch with the Nyx redteam/offensive-security persona active from the start (also on `interactive` and `exec`) |
+| `<cmd> \| reid` | Pipe a prompt via stdin as the initial turn (only applies to the bare/no-subcommand form) |
+| `reid exec "<prompt>"` | Run a single prompt non-interactively (headless) |
+| `reid deepreid "<task>"` | Plan + review `<task>` via the Researcher/Planner/Critic pipeline (headless, like `exec`) — no code changes, saves a Markdown plan |
+| `reid resume <session-id>` | Resume a prior session, then enter interactive mode |
+| `reid sessions` | List all sessions |
+| `reid config-show` | Show the effective (merged) configuration |
+| `reid tools` | List registered tools with risk levels |
+| `reid doctor` | Run environment diagnostics |
+| `reid version` | Show version and runtime info |
+| `reid --help` | Show the command surface |
 
 ### Slash commands (inside the TUI)
 
@@ -232,13 +232,13 @@ How `/goal` works:
 - `add` creates child subgoals. `milestone` creates progress markers. `block`,
   `revise`, and `abandon` keep the history honest when reality changes.
 - Free text is accepted as a shortcut for creating a new active goal, so
-  `/goal make me a report of Reidcli` is the same kind of action as
-  `/goal new make me a report of Reidcli`.
+  `/goal make me a report of ReidX` is the same kind of action as
+  `/goal new make me a report of ReidX`.
 
 Typical flow:
 
 ```text
-/goal make me a report of Reidcli
+/goal make me a report of ReidX
 /goal outcome A useful report exists and cites the relevant code/docs
 /goal evidence add Report covers command surface, runtime, tools, and persistence
 /goal add Inspect README and docs
@@ -272,7 +272,7 @@ inspect the goal hierarchy, evidence, blockers, and revisions.
 | `/workflow delete <name>` | Delete a workflow |
 
 Workflows are global (not tied to a session or workspace) and persist to
-`~/.reidcli/workflows.json`, so a workflow saved in one session is runnable
+`~/.reidx/workflows.json`, so a workflow saved in one session is runnable
 from any other.
 
 **Providers**
@@ -290,7 +290,7 @@ from any other.
 |---|---|
 | `/help` | Show grouped help |
 | `/clear` | Clear the output pane |
-| `/exit` | Quit ReidCLI (also `Ctrl+D`; `Ctrl+C` clears the current input line) |
+| `/exit` | Quit ReidX (also `Ctrl+D`; `Ctrl+C` clears the current input line) |
 
 ---
 
@@ -348,9 +348,9 @@ the actual safety boundary (the same design used by DeepReid's role prompts).
 Turn it on three ways:
 
 ```powershell
-reidcli --nyx                # from launch
-reidcli interactive --nyx "<prompt>"
-reidcli exec --nyx "<prompt>"
+reid --nyx                # from launch
+reid interactive --nyx "<prompt>"
+reid exec --nyx "<prompt>"
 ```
 
 or at runtime inside the TUI:
@@ -409,10 +409,10 @@ configured mode; the restricted tool registries are the actual safety
 boundary, so auto-approving inside them is safe.
 
 Output is a Markdown plan+critique, saved to
-`~/.reidcli/deepreid/<run-id>.md`. Two entry points:
+`~/.reidx/deepreid/<run-id>.md`. Two entry points:
 
 ```powershell
-reidcli deepreid "<task>"          # headless, like exec
+reid deepreid "<task>"          # headless, like exec
 ```
 
 or type `deepread`/`deep reid` at the very start of the TUI's input box (the
@@ -430,18 +430,18 @@ stubbed" below).
 Config is merged in this precedence order (low → high):
 
 1. **Built-in defaults** — a stub provider, balanced mode
-2. **Global config** — `~/.reidcli/config.json`
-3. **Project config** — `./.reidcli/config.json`
-4. **`settings.json`'s `reidcli` block** (see below)
+2. **Global config** — `~/.reidx/config.json`
+3. **Project config** — `./.reidx/config.json`
+4. **`settings.json`'s `reidx` block** (see below)
 5. **Environment variables** (highest)
 
 ### `settings.json` (Claude-Code-shaped project settings)
 
-ReidCLI also reads a Claude-Code-style `settings.json`: an `env` block
+ReidX also reads a Claude-Code-style `settings.json`: an `env` block
 (applied to `os.environ` before anything reads credentials — this is how a
 project can bake in Anthropic-compatible proxy credentials even when the
 shell's own `ANTHROPIC_*` vars point somewhere else) and an optional
-`reidcli` block (baked-in `default_provider`, `policy`, etc.). Unknown keys
+`reidx` block (baked-in `default_provider`, `policy`, etc.). Unknown keys
 (`theme`, `effortLevel`, ...) are ignored harmlessly, so an existing Claude
 Code settings file works as-is.
 
@@ -449,26 +449,26 @@ Path resolution (first hit wins):
 
 1. `$REIDCHAT_SETTINGS` (explicit override)
 2. A project-local `settings.json`, found by walking upward from the current
-   directory the way `git` finds `.git` — so launching `reidcli` from any
+   directory the way `git` finds `.git` — so launching `reid` from any
    subdirectory of a project still finds that project's file
-3. `~/.reidcli/settings.json` (global default)
+3. `~/.reidx/settings.json` (global default)
 4. `E:/leech/Reidchat.json` (legacy shared file)
 
 ### Environment variables
 
 | Variable | Effect |
 |---|---|
-| `REIDCLI_PROVIDER` | Default provider name (e.g. `stub`) |
-| `REIDCLI_WORKSPACE` | Workspace root path |
-| `REIDCLI_STORAGE` | Storage root path (defaults to `~/.reidcli`) |
-| `REIDCLI_PERMISSION_MODE` | Permission mode: `strict` `balanced` `autonomous` `custom` |
-| `REIDCLI_LOG_LEVEL` | Log level: `INFO` `DEBUG` `WARNING` `ERROR` |
+| `REIDX_PROVIDER` | Default provider name (e.g. `stub`) |
+| `REIDX_WORKSPACE` | Workspace root path |
+| `REIDX_STORAGE` | Storage root path (defaults to `~/.reidx`) |
+| `REIDX_PERMISSION_MODE` | Permission mode: `strict` `balanced` `autonomous` `custom` |
+| `REIDX_LOG_LEVEL` | Log level: `INFO` `DEBUG` `WARNING` `ERROR` |
 | `REIDCHAT_SETTINGS` | Explicit path override for the `settings.json` lookup above |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` | Auto-registers an `anthropic` provider at startup (never made default; `/use anthropic`) |
 
 ### Config file example
 
-`~/.reidcli/config.json`:
+`~/.reidx/config.json`:
 
 ```json
 {
@@ -484,7 +484,7 @@ Path resolution (first hit wins):
 View the effective merged config:
 
 ```powershell
-reidcli config-show
+reid config-show
 ```
 
 ---
@@ -556,10 +556,10 @@ approval prompt in `balanced`/`strict` mode.
 
 ## Sessions and persistence
 
-Each session gets a structured directory under `~/.reidcli/sessions/<id>/`:
+Each session gets a structured directory under `~/.reidx/sessions/<id>/`:
 
 ```
-~/.reidcli/sessions/<session-id>/
+~/.reidx/sessions/<session-id>/
   meta.json         # Session record (id, workspace, model, mode, status, timestamps)
   transcript.jsonl  # One Message per line (restorable into state on resume)
   tasks.json        # Task state for the session
@@ -570,18 +570,18 @@ Each session gets a structured directory under `~/.reidcli/sessions/<id>/`:
 Workflows and connected providers live one level up, outside any single session:
 
 ```
-~/.reidcli/workflows.json   # {"workflows": [{name, description, steps, created_at}, ...]}
-~/.reidcli/providers.json   # {"providers": [{name, kind, base_url, api_key, default_model}, ...]} (chmod 600)
+~/.reidx/workflows.json   # {"workflows": [{name, description, steps, created_at}, ...]}
+~/.reidx/providers.json   # {"providers": [{name, kind, base_url, api_key, default_model}, ...]} (chmod 600)
 ```
 
-**Resume is real:** `reidcli resume <id>` reloads the transcript into the agent's
+**Resume is real:** `reid resume <id>` reloads the transcript into the agent's
 message history so the conversation continues with full context (capped at the 100
 most recent messages).
 
 List sessions:
 
 ```powershell
-reidcli sessions
+reid sessions
 ```
 
 ---
@@ -591,15 +591,15 @@ reidcli sessions
 Run a single prompt without entering the TUI:
 
 ```powershell
-reidcli exec "list the current dir"
-reidcli exec "read README.md"
-reidcli exec --file prompt.txt
-reidcli exec --nyx "recon plan for <authorized target>"
+reid exec "list the current dir"
+reid exec "read README.md"
+reid exec --file prompt.txt
+reid exec --nyx "recon plan for <authorized target>"
 ```
 
 Output goes to stdout; tool-call count goes to stderr. Exit code is `0` on success,
 `1` if no text was produced. The approver auto-allows in exec mode — set
-`REIDCLI_PERMISSION_MODE=autonomous` for unattended runs, or `strict` to deny all
+`REIDX_PERMISSION_MODE=autonomous` for unattended runs, or `strict` to deny all
 risky actions silently.
 
 ---
@@ -625,9 +625,9 @@ ruff check --fix src tests   # auto-fix
 ### Project structure
 
 ```
-ReidCLI/
+ReidX/
   pyproject.toml
-  src/reidcli/
+  src/reidx/
     app/         # Typer CLI commands, dependency wiring
     config/      # Pydantic config models + loader (global/project/settings.json/env merge)
     diagnostics/ # logger + JSONL event log
@@ -638,7 +638,7 @@ ReidCLI/
     provider/    # BaseProvider + StubProvider + Anthropic/OpenAI/OpenAI-compatible/Ollama
                  # + ProviderRegistry + ProviderStore (persisted /connect records)
     tools/       # ToolDefinition/Result, registry, file/shell/web-search/spawn_agent tools
-    workflows/   # Workflow model + global WorkflowStore (~/.reidcli/workflows.json)
+    workflows/   # Workflow model + global WorkflowStore (~/.reidx/workflows.json)
     nyx/         # Nyx redteam/offensive-security persona (system-prompt swap only)
     deepreid/    # Researcher->Planner->Critic planning-and-review pipeline
     runtime/     # RuntimeState, agent loop, orchestrator (composition root), subagent manager
@@ -654,10 +654,10 @@ ReidCLI/
 
 See the parent repo's design docs:
 
-- `reidcli-build-plan.md` — full product definition and phase plan
+- `reidx-build-plan.md` — full product definition and phase plan
 - `agent-first-cli-spec.md` — generic agent-first CLI specification
-- `docs/reidcli-architecture-audit.md` — file-aware critique of this scaffold
-- `docs/reidcli-phase-5-plan.md` — correctness fixes + interaction upgrade
+- `docs/reidx-architecture-audit.md` — file-aware critique of this scaffold
+- `docs/reidx-phase-5-plan.md` — correctness fixes + interaction upgrade
 - `../deepreid-spec.md` — spec for DeepReid, the planning/review multi-agent
   subsystem, now implemented (see above)
 
@@ -682,22 +682,22 @@ See the parent repo's design docs:
 - Workflows: save/list/show/run/delete reusable multi-step command sequences
 - Providers: real HTTP clients (Anthropic/OpenAI/OpenAI-compatible/Ollama),
   `/connect`/`/disconnect`/`/use`/`/providers`, persisted to
-  `~/.reidcli/providers.json`
+  `~/.reidx/providers.json`
 - Subagents: `spawn_agent` tool runs a scoped child agent (own policy engine +
   tool allowlist, one layer of nesting), live TUI panel showing progress
-- **DeepReid** (`src/reidcli/deepreid/`): a real Researcher→Planner→Critic
+- **DeepReid** (`src/reidx/deepreid/`): a real Researcher→Planner→Critic
   subagent pipeline — each role is an independent `Agent`/`PolicyEngine`
   (Planner/Critic get zero tools; Researcher gets read-only file tools +
   `web_search` only), sequential, with a Critic-driven revision loop capped
   at 2 rounds. Never writes files or runs commands — output is a Markdown
-  plan+critique, saved to `~/.reidcli/deepreid/<run-id>.md`. Two entry
-  points: `reidcli deepreid "<task>"` (headless CLI, like `exec`) and typing
+  plan+critique, saved to `~/.reidx/deepreid/<run-id>.md`. Two entry
+  points: `reid deepreid "<task>"` (headless CLI, like `exec`) and typing
   `deepread`/`deep reid` at the start of the TUI's input box (border pulses
   green while active, real-time progress shown per stage).
 - **Nyx**: redteam/offensive-security persona, toggled via `--nyx` or
   `/nyx on|off` — swaps the system prompt only; tool access/policy gating are
   unchanged
-- Claude-Code-shaped `settings.json` support (env block + baked-in `reidcli`
+- Claude-Code-shaped `settings.json` support (env block + baked-in `reidx`
   config block), project-local with upward directory search
 - Prompt injection at launch: literal argument, `--file`, or piped stdin
 - Headless exec mode

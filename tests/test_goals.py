@@ -1,15 +1,15 @@
-"""Goal store tests."""
+﻿"""Goal store tests."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from reidcli.config.models import default_config
-from reidcli.goals.models import GoalNodeKind, GoalStatus
-from reidcli.goals.store import GoalStore
-from reidcli.provider.stub import StubProvider
-from reidcli.runtime.orchestrator import Orchestrator
-from reidcli.tools import default_registry
-from reidcli.ui.commands import handle
+from reidx.config.models import default_config
+from reidx.goals.models import GoalNodeKind, GoalStatus
+from reidx.goals.store import GoalStore
+from reidx.provider.stub import StubProvider
+from reidx.runtime.orchestrator import Orchestrator
+from reidx.tools import default_registry
+from reidx.ui.commands import handle
 
 
 def test_goal_create_get_list_and_active(tmp_path: Path) -> None:
@@ -124,8 +124,8 @@ def test_goal_free_text_creates_goal(tmp_path: Path) -> None:
     orch = Orchestrator(cfg, StubProvider(), default_registry())
     orch.start_session("test")
 
-    assert handle(orch, "/goal make me a report of Reidcli") == "continue"
+    assert handle(orch, "/goal make me a report of ReidX") == "continue"
 
     goal = orch.goal_store().active()
     assert goal is not None
-    assert goal.title == "make me a report of Reidcli"
+    assert goal.title == "make me a report of ReidX"
