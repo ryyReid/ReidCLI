@@ -207,7 +207,7 @@ def doctor() -> None:
     console.print(f"storage   {cfg.storage_root}")
     console.print(f"provider  {cfg.default_provider}")
     console.print(f"mode      {cfg.policy.default_mode.value}")
-    console.print(f"providers {orch.provider.name} (active), {orch.tools.definitions().__len__()} tools")
+    console.print(f"providers {orch.provider.name} (active), {len(orch.tools.definitions())} tools")
     import os
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())

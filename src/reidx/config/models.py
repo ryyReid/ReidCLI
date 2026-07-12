@@ -19,6 +19,7 @@ class ProviderConfig(BaseModel):
     base_url: str | None = None
     api_key: SecretStr | None = None
     default_model: str = ""
+    auth_method: str = "bearer"
 
 
 class PolicyConfig(BaseModel):

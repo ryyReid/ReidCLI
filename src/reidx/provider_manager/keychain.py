@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
 import base64
+import getpass
+import hashlib
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -70,6 +73,21 @@ if _IS_WINDOWS:
             ctypes.windll.kernel32.LocalFree(blob_out.pbData)
 
 
+def _machine_key() -> bytes:
+    parts = [
+        getpass.getuser(),
+        socket.gethostname(),
+        str(Path.home()),
+        sys.platform,
+    ]
+    raw = "|".join(parts).encode("utf-8")
+    return hashlib.pbkdf2_hmac("sha256", raw, b"reidx-keychain-v1", 100000, dklen=32)
+
+
+def _xor_cipher(data: bytes, key: bytes) -> bytes:
+    return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
+
+
 def encrypt(plaintext: str) -> str:
     if not plaintext:
         return ""
@@ -77,8 +95,7 @@ def encrypt(plaintext: str) -> str:
     if _IS_WINDOWS:
         encrypted = _dpapi_encrypt(raw)
     else:
-        log.warning("DPAPI not available on this platform; storing key without OS encryption")
-        encrypted = raw
+        encrypted = _xor_cipher(raw, _machine_key())
     return base64.b64encode(encrypted).decode("ascii")
 
 
@@ -89,7 +106,7 @@ def decrypt(ciphertext: str) -> str:
     if _IS_WINDOWS:
         decrypted = _dpapi_decrypt(raw)
     else:
-        decrypted = raw
+        decrypted = _xor_cipher(raw, _machine_key())
     return decrypted.decode("utf-8")
 
 

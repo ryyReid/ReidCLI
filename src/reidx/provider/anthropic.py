@@ -11,13 +11,11 @@ Env vars consumed:
 """
 from __future__ import annotations
 
-import json
 import os
-import urllib.error
-import urllib.request
 from typing import Any
 
 from reidx.diagnostics.logger import get_logger
+from reidx.provider._http import get_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
 
 log = get_logger("reidx.provider.anthropic")
@@ -25,7 +23,6 @@ log = get_logger("reidx.provider.anthropic")
 DEFAULT_BASE_URL = "https://api.anthropic.com"
 API_VERSION = "2023-06-01"
 MAX_TOKENS = 4096
-TIMEOUT_SECONDS = 120
 
 
 class AnthropicProvider(BaseProvider):
@@ -53,6 +50,12 @@ class AnthropicProvider(BaseProvider):
         model = os.environ.get("ANTHROPIC_MODEL", "").strip()
         return cls(api_key=key, base_url=base, default_model=model)
 
+    def _headers(self) -> dict[str, str]:
+        return {
+            "x-api-key": self.api_key,
+            "anthropic-version": API_VERSION,
+        }
+
     def _to_anthropic_messages(self, messages: list[Message]) -> tuple[str | None, list[dict]]:
         """Convert ReidX Messages to Anthropic format. Returns (system, messages)."""
         system: str | None = None
@@ -62,7 +65,6 @@ class AnthropicProvider(BaseProvider):
                 system = m.content
                 continue
             if m.role == "tool":
-                # Tool results -> Anthropic tool_result content block.
                 out.append({
                     "role": "user",
                     "content": [{
@@ -73,7 +75,6 @@ class AnthropicProvider(BaseProvider):
                 })
                 continue
             if m.role == "assistant" and m.tool_calls:
-                # Assistant turn with tool calls -> content blocks.
                 blocks: list[dict] = []
                 if m.content:
                     blocks.append({"type": "text", "text": m.content})
@@ -86,7 +87,6 @@ class AnthropicProvider(BaseProvider):
                     })
                 out.append({"role": "assistant", "content": blocks})
                 continue
-            # Plain user or assistant text.
             out.append({"role": m.role, "content": m.content})
         return system, out
 
@@ -150,27 +150,24 @@ class AnthropicProvider(BaseProvider):
         if anthropic_tools:
             payload["tools"] = anthropic_tools
 
-        body = json.dumps(payload).encode("utf-8")
         url = f"{self.base_url}/v1/messages"
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": API_VERSION,
-                "content-type": "application/json",
-            },
-            method="POST",
-        )
         try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-                raw = resp.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            err_body = exc.read().decode("utf-8", errors="replace")[:500]
-            log.error("Anthropic API error %s: %s", exc.code, err_body)
-            raise RuntimeError(f"Anthropic API error {exc.code}: {err_body}") from exc
-        except urllib.error.URLError as exc:
-            log.error("Anthropic connection error: %s", exc)
-            raise RuntimeError(f"connection error: {exc}") from exc
+            body = post_json(url, payload, self._headers())
+        except RuntimeError:
+            log.exception("Anthropic API request failed")
+            raise
+        return self._parse_response(body, model)
 
-        return self._parse_response(json.loads(raw), model)
+    def fetch_models(self) -> list[str]:
+        url = f"{self.base_url}/v1/models"
+        try:
+            body = get_json(url, self._headers())
+        except RuntimeError:
+            log.debug("failed to fetch models from %s", url)
+            return []
+        models: list[str] = []
+        for item in body.get("data", []):
+            mid = item.get("id", "")
+            if mid:
+                models.append(mid)
+        return sorted(models)

@@ -144,13 +144,36 @@ class OpenAICompatibleProvider(OpenAIProvider):
     """OpenAI-compatible endpoints (llama.cpp server, LM Studio, vLLM, etc.).
 
     Same wire format as OpenAI; only default base_url differs and the API key
-    is optional. Kept as a subclass so `/providers` can show the kind
-    separately in the list.
+    is optional. Auth method is configurable so providers that use x-api-key
+    instead of Bearer are handled correctly. Kept as a subclass so `/providers`
+    can show the kind separately in the list.
     """
 
     name = "openai-compatible"
     DEFAULT_BASE_URL = "http://localhost:8080"
     DEFAULT_MODEL = "local"
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "",
+        default_model: str = "",
+        auth_method: str = "bearer",
+    ) -> None:
+        self.auth_method = auth_method
+        super().__init__(api_key=api_key, base_url=base_url, default_model=default_model)
+
+    def _headers(self) -> dict[str, str]:
+        h = {}
+        if not self.api_key:
+            return h
+        if self.auth_method == "x-api-key":
+            h["x-api-key"] = self.api_key
+        elif self.auth_method == "none":
+            pass
+        else:
+            h["authorization"] = f"Bearer {self.api_key}"
+        return h
 
 
 def _json_dump(obj) -> str:  # type: ignore[no-untyped-def]

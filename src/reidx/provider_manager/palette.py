@@ -628,13 +628,12 @@ class ProviderPalette:
             existing.default_model = model
             existing.auth_method = auth
             if api_key:
+                from reidx.provider_manager import keychain
                 existing.keys.append(StoredKey(
                     id=uuid.uuid4().hex[:12],
                     label="Default",
-                    encrypted_key="",
+                    encrypted_key=keychain.encrypt(api_key),
                 ))
-                from reidx.provider_manager import keychain
-                existing.keys[-1].encrypted_key = keychain.encrypt(api_key)
                 if existing.active_key_id is None:
                     existing.active_key_id = existing.keys[-1].id
             self.db.save_provider(existing)
@@ -708,6 +707,7 @@ class ProviderPalette:
             record = ProviderRecord(
                 name=sp.name, kind=sp.kind, base_url=sp.base_url,
                 api_key=api_key, default_model=sp.default_model,
+                auth_method=sp.auth_method,
             )
             provider = build_provider(record)
             if not sp.default_model:

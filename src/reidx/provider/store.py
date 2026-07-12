@@ -39,6 +39,7 @@ class ProviderRecord:
     base_url: str = ""
     api_key: str = ""
     default_model: str = ""
+    auth_method: str = "bearer"
 
 
 def build_provider(record: ProviderRecord) -> BaseProvider:
@@ -60,6 +61,7 @@ def build_provider(record: ProviderRecord) -> BaseProvider:
             api_key=record.api_key,
             base_url=record.base_url,
             default_model=record.default_model,
+            auth_method=record.auth_method,
         )
     if kind == "ollama":
         return OllamaProvider(
@@ -130,7 +132,10 @@ def validate_provider(record: ProviderRecord) -> tuple[bool, str]:
         provider = build_provider(record)
     except (ValueError, TypeError) as exc:
         return False, str(exc)
-    if not record.api_key and record.kind != "ollama":
+    _keyless_kinds = ("ollama", "openai-compatible")
+    if not record.api_key and record.kind not in _keyless_kinds:
+        return False, "API key required for this provider kind"
+    if not record.api_key:
         return True, "no key required"
     try:
         models = provider.fetch_models()
@@ -170,6 +175,7 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             base_url=sp.base_url,
             api_key=api_key,
             default_model=sp.default_model,
+            auth_method=sp.auth_method,
         )
         try:
             provider = build_provider(record)

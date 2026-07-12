@@ -502,13 +502,14 @@ def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> Non
                 existing.active_key_id = k.id
         existing.kind = record.kind
         existing.base_url = record.base_url
+        existing.auth_method = record.auth_method
         if record.default_model:
             existing.default_model = record.default_model
         db.save_provider(existing)
     else:
         sp = StoredProvider(
             name=record.name, kind=record.kind, base_url=record.base_url,
-            default_model=record.default_model,
+            default_model=record.default_model, auth_method=record.auth_method,
         )
         if record.api_key:
             k = StoredKey(

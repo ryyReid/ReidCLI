@@ -10,13 +10,14 @@ ignored harmlessly.
 Path resolution (first hit wins):
   1. $REIDCHAT_SETTINGS                (explicit override)
   2. ./settings.json                   (project-local, when it exists)
-  3. E:/leech/Reidchat.json            (legacy default — the shared Reidchat file)
+  3. ~/.reidx/settings.json            (global default)
+  4. ~/Reidchat.json                    (legacy fallback)
 
-Project-local wins over the shared Reidchat file so a project can bake in a
-different backend, permission mode, or provider set without editing the
-global file. The env block is authoritative for the process (overrides any
-ambient env) — this is how ReidX picks up the Reidchat proxy credentials
-even when the shell's ANTHROPIC_* vars point somewhere else.
+Project-local wins over the global file so a project can bake in a different
+backend, permission mode, or provider set without editing the global file.
+The env block is authoritative for the process (overrides any ambient env)
+— this is how ReidX picks up proxy credentials even when the shell's
+ANTHROPIC_* vars point somewhere else.
 """
 from __future__ import annotations
 
@@ -29,9 +30,9 @@ from reidx.diagnostics.logger import get_logger
 
 log = get_logger("reidx.config.settings")
 
-LEGACY_SETTINGS_PATH = Path("E:/leech/Reidchat.json")
 GLOBAL_SETTINGS_PATH = app_data_dir() / "settings.json"
 PROJECT_SETTINGS_FILENAME = "settings.json"
+LEGACY_SETTINGS_PATH = Path.home() / "Reidchat.json"
 
 
 def _walk_upward_for_project_settings(start: Path) -> Path | None:
@@ -62,7 +63,7 @@ def settings_path() -> Path:
       1. $REIDCHAT_SETTINGS                    (explicit override)
       2. project settings.json (walk upward from CWD)
       3. ~/.reidx/settings.json              (global default)
-      4. E:/leech/Reidchat.json                (legacy shared file)
+      4. ~/Reidchat.json                      (legacy fallback)
 
     Returns the last fallback even if it doesn't exist, so `doctor` can
     report it as "missing" rather than crashing on a None.

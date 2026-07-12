@@ -113,8 +113,8 @@ _BUILTIN: list[ProviderDefinition] = [
         default_model="auto", aliases=[], auth_method="none", icon="🚀",
     ),
     ProviderDefinition(
-        id="azure-openai", name="Azure OpenAI", description="OpenAI models via Azure cloud",
-        kind="openai", base_url="", default_model="gpt-4o-mini",
+        id="azure-openai", name="Azure OpenAI", description="OpenAI models via Azure cloud (set base URL to your endpoint)",
+        kind="openai", base_url="https://api.openai.com", default_model="gpt-4o-mini",
         aliases=["azure"], icon="☁️",
     ),
     ProviderDefinition(
@@ -178,8 +178,9 @@ _BUILTIN: list[ProviderDefinition] = [
         default_model="jamba-1.5-large", aliases=[], icon="🃏",
     ),
     ProviderDefinition(
-        id="databricks", name="Databricks", description="Serving endpoints for fine-tuned models",
-        kind="openai-compatible", base_url="", default_model="databricks-dbrx-instruct",
+        id="databricks", name="Databricks", description="Serving endpoints for fine-tuned models (set base URL to your workspace)",
+        kind="openai-compatible", base_url="https://dbc-xxxxxxxx.cloud.databricks.com/serving-endpoints",
+        default_model="databricks-dbrx-instruct",
         aliases=[], icon="🧱",
     ),
     ProviderDefinition(
@@ -205,7 +206,7 @@ _BUILTIN: list[ProviderDefinition] = [
     ProviderDefinition(
         id="lambda", name="Lambda Labs", description="GPU cloud for AI training and inference",
         kind="openai-compatible", base_url="https://api.lambdalabs.com/v1",
-        default_model="", aliases=["lambda-labs"], icon="λ",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["lambda-labs"], icon="λ",
     ),
     ProviderDefinition(
         id="kluster", name="Kluster AI", description="Distributed GPU network for inference",
@@ -234,7 +235,8 @@ _BUILTIN: list[ProviderDefinition] = [
     ),
     ProviderDefinition(
         id="cloudflare-ai", name="Cloudflare Workers AI", description="Serverless AI inference at the edge",
-        kind="openai-compatible", base_url="", default_model="@cf/meta/llama-3.1-70b-instruct",
+        kind="openai-compatible", base_url="https://api.cloudflare.com/client/v4",
+        default_model="@cf/meta/llama-3.1-70b-instruct",
         aliases=["cf-ai"], icon="orange",
     ),
     ProviderDefinition(
@@ -245,7 +247,7 @@ _BUILTIN: list[ProviderDefinition] = [
     ProviderDefinition(
         id="baseten", name="Baseten", description="Model deployment and serving platform",
         kind="openai-compatible", base_url="https://inference.baseten.co/v1",
-        default_model="", aliases=[], icon="🏗️",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🏗️",
     ),
     ProviderDefinition(
         id="anyscale", name="Anyscale", description="Ray-based scalable model serving",
@@ -264,7 +266,8 @@ _BUILTIN: list[ProviderDefinition] = [
     ),
     ProviderDefinition(
         id="watsonx", name="IBM Watsonx", description="Enterprise AI platform with Granite models",
-        kind="openai-compatible", base_url="", default_model="ibm/granite-3-8b-instruct",
+        kind="openai-compatible", base_url="https://us-south.ml.cloud.ibm.com",
+        default_model="ibm/granite-3-8b-instruct",
         aliases=["ibm"], icon="🔷",
     ),
     ProviderDefinition(

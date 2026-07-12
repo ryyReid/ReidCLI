@@ -79,6 +79,7 @@ def default_registry(config: Config) -> ProviderRegistry:
                 base_url=pc.base_url or "",
                 api_key=pc.api_key.get_secret_value() if pc.api_key else "",
                 default_model=pc.default_model,
+                auth_method=pc.auth_method,
             ))
         except (ValueError, TypeError):
             log.warning("provider '%s' (kind=%s) configured but could not be built; skipping", name, kind)
