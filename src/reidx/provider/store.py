@@ -153,6 +153,8 @@ def validate_provider(
         msg = str(exc)
         if msg.startswith("HTTP 401") or msg.startswith("HTTP 403"):
             return False, f"authentication failed ({msg})"
+        if msg.startswith("HTTP 404"):
+            return False, f"endpoint not found - check base URL ({msg})"
         if msg.startswith("HTTP "):
             return False, f"provider error: {msg}"
         return False, f"{msg} (use --skip-verify to save anyway)"

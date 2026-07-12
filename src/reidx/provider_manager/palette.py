@@ -96,6 +96,7 @@ class ProviderPalette:
     CONFIRM = "confirm"
     WIZARD = "wizard"
     MESSAGE = "message"
+    MODELS = "models"
 
     def __init__(
         self,
@@ -163,7 +164,7 @@ class ProviderPalette:
     def is_list_screen(self) -> bool:
         return self._active and self.screen in (
             self.LIST, self.KEYS, self.MANAGE, self.RENAME_SEL,
-            self.DELETE_SEL, self.CONFIRM, self.WIZARD,
+            self.DELETE_SEL, self.CONFIRM, self.WIZARD, self.MODELS,
         ) and not self.is_input_screen()
 
     def activate(self) -> None:
@@ -219,6 +220,10 @@ class ProviderPalette:
             self._scroll_offset = 0
         elif self.screen == self.MESSAGE:
             self.screen = self._message_next
+            self.selected_index = 0
+            self._scroll_offset = 0
+        elif self.screen == self.MODELS:
+            self.screen = self.MANAGE
             self.selected_index = 0
             self._scroll_offset = 0
         elif self.screen == self.WIZARD:
@@ -311,6 +316,8 @@ class ProviderPalette:
                 if step.field == "auth_method":
                     return AUTH_OPTIONS
             return []
+        if self.screen == self.MODELS:
+            return self._models_items()
         return []
 
     def _list_items(self) -> list[PaletteItem]:
@@ -327,14 +334,14 @@ class ProviderPalette:
             if d.name.lower() in stored:
                 sp = stored[d.name.lower()]
                 active_key = sp.active_key()
-                icon = "●" if active_key else "○"
+                icon = "?" if active_key else "	"
                 items.append(PaletteItem(
                     label=d.name, description=d.description, icon=icon,
                     kind="stored", data=sp,
                 ))
             else:
                 items.append(PaletteItem(
-                    label=d.name, description=d.description, icon="◆",
+                    label=d.name, description=d.description, icon="?",
                     kind="catalog", data=d,
                 ))
 
@@ -342,7 +349,7 @@ class ProviderPalette:
             if sp.name.lower() not in {d.name.lower() for d in defs}:
                 if not q or q in sp.name.lower() or q in sp.kind.lower() or q in sp.base_url.lower():
                     active_key = sp.active_key()
-                    icon = "●" if active_key else "○"
+                    icon = "?" if active_key else "	"
                     items.append(PaletteItem(
                         label=sp.name, description=f"{sp.kind}  {sp.base_url}", icon=icon,
                         kind="stored", data=sp,
@@ -359,7 +366,7 @@ class ProviderPalette:
         if self.current_provider:
             for k in self.current_provider.keys:
                 is_active = k.id == self.current_provider.active_key_id
-                icon = "●" if is_active else "○"
+                icon = "?" if is_active else "	"
                 desc = "active" if is_active else ""
                 items.append(PaletteItem(label=k.label, description=desc, icon=icon, kind="action", data=k))
         items.append(PaletteItem(label="Add API Key", icon="+", kind="action"))
@@ -369,13 +376,14 @@ class ProviderPalette:
         items: list[PaletteItem] = []
         sp = self.current_provider
         if sp and len(sp.keys) > 1:
-            items.append(PaletteItem("Switch Key", "Change the active API key", icon="→"))
+            items.append(PaletteItem("Switch Key", "Change the active API key", icon=""))
         items.append(PaletteItem("Add Key", "Add another API key", icon="+"))
         if sp and sp.keys:
-            items.append(PaletteItem("Rename Key", "Rename a key label", icon="✎"))
-            items.append(PaletteItem("Delete Key", "Remove a key", icon="✕"))
-        items.append(PaletteItem("Edit Provider", "Change base URL, model, etc.", icon="⚙"))
-        items.append(PaletteItem("Remove Provider", "Delete provider and all keys", icon="✕", kind="action"))
+            items.append(PaletteItem("Rename Key", "Rename a key label", icon="?"))
+            items.append(PaletteItem("Delete Key", "Remove a key", icon="?"))
+        items.append(PaletteItem("View Models", "Browse and set default model", icon="M"))
+        items.append(PaletteItem("Edit Provider", "Change base URL, model, etc.", icon="?"))
+        items.append(PaletteItem("Remove Provider", "Delete provider and all keys", icon="?", kind="action"))
         return items
 
     def _key_select_items(self, _mode: str) -> list[PaletteItem]:
@@ -383,8 +391,41 @@ class ProviderPalette:
         if self.current_provider:
             for k in self.current_provider.keys:
                 is_active = k.id == self.current_provider.active_key_id
-                icon = "●" if is_active else "○"
+                icon = "?" if is_active else "	"
                 items.append(PaletteItem(label=k.label, icon=icon, kind="action", data=k))
+        return items
+
+    def _models_items(self) -> list[PaletteItem]:
+        items: list[PaletteItem] = []
+        if not self.current_provider:
+            return items
+        
+        sp = self.current_provider
+        try:
+            provider = build_provider(ProviderRecord(
+                name=sp.name, kind=sp.kind, base_url=sp.base_url,
+                api_key=sp.decrypted_api_key(), default_model=sp.default_model,
+                auth_method=sp.auth_method,
+            ))
+            models = provider.fetch_models()
+        except Exception as exc:
+            log.warning("failed to fetch models for %s: %s", sp.name, exc)
+            items.append(PaletteItem("Error loading models", str(exc), icon="!", kind="action"))
+            return items
+        
+        if not models:
+            items.append(PaletteItem("No models available", "Provider returned empty model list", icon="!", kind="action"))
+            return items
+        
+        current_model = sp.default_model or ""
+        for model in models:
+            is_current = model == current_model
+            icon = "?" if is_current else "	"
+            desc = "current" if is_current else ""
+            items.append(PaletteItem(
+                label=model, description=desc, icon=icon, kind="model", data=model
+            ))
+        
         return items
 
     def _handle_list_enter(self, item: PaletteItem) -> None:
@@ -402,6 +443,8 @@ class ProviderPalette:
             self._on_confirm_select(item)
         elif self.screen == self.WIZARD:
             self._on_wizard_select(item)
+        elif self.screen == self.MODELS:
+            self._on_models_select(item)
 
     def _on_list_select(self, item: PaletteItem) -> None:
         if item.kind == "action":
@@ -472,6 +515,11 @@ class ProviderPalette:
             self.selected_index = 0
             self._scroll_offset = 0
             self._invalidate()
+        elif label == "View Models":
+            self.screen = self.MODELS
+            self.selected_index = 0
+            self._scroll_offset = 0
+            self._invalidate()
         elif label == "Edit Provider":
             self._start_wizard(edit=True)
         elif label == "Remove Provider":
@@ -503,6 +551,46 @@ class ProviderPalette:
             self._scroll_offset = 0
             self._invalidate()
 
+    def _models_items(self) -> list[PaletteItem]:
+        items: list[PaletteItem] = []
+        if not self.current_provider:
+            return items
+        
+        sp = self.current_provider
+        try:
+            provider = build_provider(ProviderRecord(
+                name=sp.name, kind=sp.kind, base_url=sp.base_url,
+                api_key=sp.decrypted_api_key(), default_model=sp.default_model,
+                auth_method=sp.auth_method,
+            ))
+            models = provider.fetch_models()
+        except Exception as exc:
+            log.warning("failed to fetch models for %s: %s", sp.name, exc)
+            items.append(PaletteItem("Error loading models", str(exc), icon="!", kind="action"))
+            return items
+        
+        if not models:
+            items.append(PaletteItem("No models available", "Provider returned empty model list", icon="!", kind="action"))
+            return items
+        
+        current_model = sp.default_model or ""
+        for model in models:
+            is_current = model == current_model
+            icon = "?" if is_current else "	"
+            desc = "current" if is_current else ""
+            items.append(PaletteItem(
+                label=model, description=desc, icon=icon, kind="model", data=model
+            ))
+        
+        return items
+
+    def _on_models_select(self, item: PaletteItem) -> None:
+        if item.kind == "model" and item.data:
+            self.current_provider.default_model = item.data
+            self.db.save_provider(self.current_provider)
+            self._register_current()
+            self._show_message(f"Set default model to '{item.data}'", self.MANAGE)
+
     def _on_confirm_select(self, item: PaletteItem) -> None:
         if item.label == "Confirm":
             if self._pending_action:
@@ -523,6 +611,13 @@ class ProviderPalette:
         step = WIZARD_STEPS[self.wizard_step_idx]
         self.wizard_data[step.field] = item.label
         self._wizard_advance()
+
+    def _on_models_select(self, item: PaletteItem) -> None:
+        if item.kind == "model" and item.data:
+            self.current_provider.default_model = item.data
+            self.db.save_provider(self.current_provider)
+            self._register_current()
+            self._show_message(f"Set default model to '{item.data}'", self.MANAGE)
 
     def _handle_input_enter(self) -> None:
         text = self.input_buf.text
@@ -820,6 +915,9 @@ class ProviderPalette:
             return [(f"bold {ACCENT}", "  + Custom Provider"), ("", "  "), (DIM, f"Step {self.wizard_step_idx + 1}/{total}: {step.prompt}")]
         if self.screen == self.MESSAGE:
             return [(f"bold {OK}", "  ✓ Done")]
+        if self.screen == self.MODELS:
+            name = self.current_provider.name if self.current_provider else ""
+            return [(f"bold {ACCENT}", f"  {name}"), ("", "  "), (DIM, "Models")]
         return [(f"bold {ACCENT}", "  Provider")]
 
     def content_fragments(self) -> list[tuple[str, str]]:
@@ -829,7 +927,7 @@ class ProviderPalette:
             return [(f"{WARN}", f"  {self._confirm_text}")]
         if self.screen == self.WIZARD and self.is_input_screen():
             step = WIZARD_STEPS[self.wizard_step_idx]
-            hint = " (optional — press Enter to skip)" if step.optional else ""
+            hint = " (optional - press Enter to skip)" if step.optional else ""
             return [(DIM, f"  {step.prompt}{hint}")]
         if self.is_input_screen():
             return [(DIM, f"  {self.input_prompt_text}")]
@@ -850,7 +948,7 @@ class ProviderPalette:
             desc = item.description
             remaining = max(1, inner - len(label_part) - 1)
             if len(desc) > remaining:
-                desc = desc[: remaining - 1] + "…"
+                desc = desc[: remaining - 1] + "."
             desc_part = f" {desc}" if desc else ""
             pad = max(0, inner - len(label_part) - len(desc_part))
             if is_sel:
@@ -878,12 +976,14 @@ class ProviderPalette:
         if self.is_input_screen():
             return [(DIM, "  Enter to continue  Esc to go back")]
         if self.screen == self.CONFIRM:
-            return [(DIM, "  ↑↓ Select  Enter Confirm  Esc Cancel")]
+            return [(DIM, "   Select  Enter Confirm  Esc Cancel")]
         if self.screen == self.MESSAGE:
             return [(DIM, "  Enter to continue")]
         if self.screen == self.LIST:
-            return [(DIM, "  ↑↓ Navigate  Enter Select  Esc Close  Type to search")]
-        return [(DIM, "  ↑↓ Navigate  Enter Select  Esc Back")]
+            return [(DIM, "   Navigate  Enter Select  Esc Close  Type to search")]
+        if self.screen == self.MODELS:
+            return [(DIM, "   Navigate  Enter Select  Esc Back")]
+        return [(DIM, "   Navigate  Enter Select  Esc Back")]
 
     def input_label(self) -> str:
         if self.screen == self.KEY_LABEL:
@@ -899,8 +999,8 @@ class ProviderPalette:
 
     def search_label(self) -> str:
         if self.screen == self.LIST:
-            return " ⌕ "
-        return " › "
+            return " ? "
+        return " > "
 
     def content_height(self) -> int:
         if self.screen == self.MESSAGE:

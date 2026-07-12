@@ -1,3 +1,10 @@
+"""Provider catalog: canonical metadata for known providers.
+
+All OpenAI-compatible providers use `base_url` without a `/v1` suffix -
+the client appends `/v1` when building request URLs. For Anthropic, the
+client uses the base URL as-is with `/v1/messages` and `/v1/models`.
+Ollama uses its native `/api` endpoints.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -22,275 +29,276 @@ _BUILTIN: list[ProviderDefinition] = [
     ProviderDefinition(
         id="openai", name="OpenAI", description="GPT-4o, o-series, and DALL-E models",
         kind="openai", base_url="https://api.openai.com", default_model="gpt-4o-mini",
-        aliases=["gpt", "chatgpt"], popular=True, icon="🟢",
+        aliases=["gpt", "chatgpt"], popular=True, icon="OAI",
     ),
     ProviderDefinition(
         id="anthropic", name="Anthropic", description="Claude Sonnet, Opus, and Haiku models",
         kind="anthropic", base_url="https://api.anthropic.com", default_model="claude-sonnet-4-20250514",
-        aliases=["claude"], auth_method="x-api-key", popular=True, icon="🟠",
+        aliases=["claude"], auth_method="x-api-key", popular=True, icon="ANT",
     ),
     ProviderDefinition(
         id="google-ai", name="Google AI", description="Gemini Pro, Flash, and Flash-Lite models",
         kind="openai-compatible", base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         default_model="gemini-2.0-flash", aliases=["gemini", "google", "google-gemini"],
-        popular=True, icon="🔵",
+        popular=True, icon="GAI",
     ),
-    ProviderDefinition(
+ProviderDefinition(
         id="openrouter", name="OpenRouter", description="Unified API for 300+ models from all providers",
-        kind="openai-compatible", base_url="https://openrouter.ai/api/v1",
-        default_model="auto", aliases=["or"], popular=True, icon="🔀",
+        kind="openai-compatible", base_url="https://openrouter.ai/api",
+        default_model="auto", aliases=["or"], popular=True, icon="ORT",
     ),
     ProviderDefinition(
         id="zai", name="Z.ai", description="GLM-4 and GLM-4.5 series models",
         kind="openai-compatible", base_url="https://open.bigmodel.cn/api/paas/v4",
-        default_model="glm-4", aliases=["z-ai", "zhipu", "glm", "bigmodel"], popular=True, icon="🟣",
+        default_model="glm-4", aliases=["z-ai", "zhipu", "glm", "bigmodel"], popular=True, icon="ZAI",
     ),
     ProviderDefinition(
         id="agentrouter", name="AgentRouter", description="Multi-model routing for AI agents",
         kind="openai-compatible", base_url="https://api.agentrouter.io/v1",
-        default_model="auto", aliases=["agent-router"], icon="🤖",
+        default_model="auto", aliases=["agent-router"], icon="AGT",
     ),
     ProviderDefinition(
         id="together", name="Together AI", description="Open-source Llama, Mixtral, and Qwen models",
         kind="openai-compatible", base_url="https://api.together.xyz/v1",
         default_model="meta-llama/Llama-3.3-70B-Instruct-Turbo", aliases=["together-ai"],
-        popular=True, icon="🤝",
+        popular=True, icon="TGT",
     ),
     ProviderDefinition(
         id="fireworks", name="Fireworks AI", description="Fast inference for open-source models",
         kind="openai-compatible", base_url="https://api.fireworks.ai/inference/v1",
         default_model="accounts/fireworks/models/llama-v3p1-70b-instruct",
-        aliases=["fireworks-ai"], popular=True, icon="🎆",
+        aliases=["fireworks-ai"], popular=True, icon="FRW",
     ),
     ProviderDefinition(
         id="groq", name="Groq", description="Ultra-fast LPU inference for Llama and Mixtral",
         kind="openai-compatible", base_url="https://api.groq.com/openai/v1",
-        default_model="llama-3.3-70b-versatile", aliases=[], popular=True, icon="⚡",
+        default_model="llama-3.3-70b-versatile", aliases=[], popular=True, icon="GRQ",
     ),
     ProviderDefinition(
         id="deepinfra", name="DeepInfra", description="Cost-effective inference for open models",
         kind="openai-compatible", base_url="https://api.deepinfra.com/v1/openai",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🔧",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="DPI",
     ),
     ProviderDefinition(
         id="cerebras", name="Cerebras", description="Fastest AI inference with Wafer-Scale Engines",
         kind="openai-compatible", base_url="https://api.cerebras.ai/v1",
-        default_model="llama3.1-70b", aliases=[], icon="🧠",
+        default_model="llama3.1-70b", aliases=[], icon="CER",
     ),
     ProviderDefinition(
         id="cohere", name="Cohere", description="Command R+ and Aya models for enterprise",
         kind="openai-compatible", base_url="https://api.cohere.ai/v1",
-        default_model="command-r-plus-08-2024", aliases=[], icon="🔗",
+        default_model="command-r-plus-08-2024", aliases=[], icon="COH",
     ),
     ProviderDefinition(
         id="xai", name="xAI", description="Grok models from xAI",
         kind="openai-compatible", base_url="https://api.x.ai/v1",
-        default_model="grok-2-latest", aliases=["grok", "x-ai"], popular=True, icon="✖️",
+        default_model="grok-2-latest", aliases=["grok", "x-ai"], popular=True, icon="XAI",
     ),
     ProviderDefinition(
         id="mistral", name="Mistral", description="Mistral Large, Codestral, and Pixtral models",
         kind="openai-compatible", base_url="https://api.mistral.ai/v1",
-        default_model="mistral-large-latest", aliases=["mistral-ai"], popular=True, icon="🌬️",
+        default_model="mistral-large-latest", aliases=["mistral-ai"], popular=True, icon="MIS",
     ),
     ProviderDefinition(
         id="perplexity", name="Perplexity", description="Sonar models with built-in web search",
         kind="openai-compatible", base_url="https://api.perplexity.ai",
-        default_model="llama-3.1-sonar-large-128k-online", aliases=[], icon="🔮",
+        default_model="llama-3.1-sonar-large-128k-online", aliases=[], icon="PPL",
     ),
     ProviderDefinition(
-        id="ollama", name="Ollama", description="Run models locally — Llama, Qwen, Phi, and more",
+        id="ollama", name="Ollama", description="Run models locally Llama, Qwen, Phi, and more",
         kind="ollama", base_url="http://localhost:11434",
-        default_model="llama3.2", aliases=[], auth_method="none", popular=True, icon="🐪",
+        default_model="llama3.2", aliases=[], auth_method="none", popular=True, icon="OLL",
     ),
     ProviderDefinition(
         id="lm-studio", name="LM Studio", description="Local model server with OpenAI-compatible API",
         kind="openai-compatible", base_url="http://localhost:1234/v1",
-        default_model="local", aliases=["lmstudio"], auth_method="none", icon="🏠",
+        default_model="local", aliases=["lmstudio"], auth_method="none", icon="LMS",
     ),
     ProviderDefinition(
         id="vllm", name="vLLM", description="High-throughput local inference server",
         kind="openai-compatible", base_url="http://localhost:8000/v1",
-        default_model="auto", aliases=[], auth_method="none", icon="🚀",
+        default_model="auto", aliases=[], auth_method="none", icon="VLL",
     ),
     ProviderDefinition(
         id="azure-openai", name="Azure OpenAI", description="OpenAI models via Azure cloud (set base URL to your endpoint)",
         kind="openai", base_url="https://api.openai.com", default_model="gpt-4o-mini",
-        aliases=["azure"], icon="☁️",
+        aliases=["azure"], icon="AZO",
     ),
     ProviderDefinition(
         id="huggingface", name="HuggingFace", description="Inference API for 100k+ models",
         kind="openai-compatible", base_url="https://api-inference.huggingface.co/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["hf"], icon="🤗",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["hf"], icon="HF",
     ),
     ProviderDefinition(
         id="sambanova", name="SambaNova", description="Fast RDU-based inference for open models",
         kind="openai-compatible", base_url="https://api.sambanova.ai/v1",
-        default_model="Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🔴",
+        default_model="Meta-Llama-3.1-70B-Instruct", aliases=[], icon="SMB",
     ),
     ProviderDefinition(
         id="novita", name="Novita", description="Affordable API for 100+ open models",
         kind="openai-compatible", base_url="https://api.novita.ai/v3/openai",
-        default_model="meta-llama/llama-3.1-70b-instruct", aliases=[], icon="💎",
+        default_model="meta-llama/llama-3.1-70b-instruct", aliases=[], icon="NVT",
     ),
     ProviderDefinition(
         id="featherless", name="Featherless", description="Serverless inference for open models",
         kind="openai-compatible", base_url="https://api.featherless.ai/v1/openai",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🪶",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="FTL",
     ),
     ProviderDefinition(
         id="chutes", name="Chutes", description="GPU-accelerated inference for AI workloads",
         kind="openai-compatible", base_url="https://api.chutes.ai/v1",
-        default_model="deepseek-ai/DeepSeek-V3", aliases=[], icon="🎯",
+        default_model="deepseek-ai/DeepSeek-V3", aliases=[], icon="CHT",
     ),
     ProviderDefinition(
         id="aimlapi", name="AI/ML API", description="Unified API for 200+ AI models",
         kind="openai-compatible", base_url="https://api.aimlapi.com/v1",
-        default_model="gpt-4o", aliases=["ai-ml-api"], icon="📊",
+        default_model="gpt-4o", aliases=["ai-ml-api"], icon="AML",
     ),
     ProviderDefinition(
         id="hyperbolic", name="Hyperbolic", description="GPU marketplace for AI inference",
         kind="openai-compatible", base_url="https://api.hyperbolic.xyz/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="📈",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="HYP",
     ),
     ProviderDefinition(
         id="deepseek", name="DeepSeek", description="DeepSeek-V3 and DeepSeek-R1 reasoning models",
         kind="openai-compatible", base_url="https://api.deepseek.com/v1",
-        default_model="deepseek-chat", aliases=[], popular=True, icon="🐳",
+        default_model="deepseek-chat", aliases=[], popular=True, icon="DSK",
     ),
     ProviderDefinition(
         id="moonshot", name="Moonshot", description="Kimi K1.5 and Moonshot models",
         kind="openai-compatible", base_url="https://api.moonshot.cn/v1",
-        default_model="moonshot-v1-8k", aliases=["kimi"], icon="🌙",
+        default_model="moonshot-v1-8k", aliases=["kimi"], icon="MSH",
     ),
     ProviderDefinition(
         id="voyage-ai", name="Voyage AI", description="Embeddings and reranking models",
         kind="openai-compatible", base_url="https://api.voyageai.com/v1",
-        default_model="voyage-large-2", aliases=[], icon="🧭",
+        default_model="voyage-large-2", aliases=[], icon="VOY",
     ),
     ProviderDefinition(
         id="nvidia-nim", name="NVIDIA NIM", description="NVIDIA inference microservices for open models",
         kind="openai-compatible", base_url="https://integrate.api.nvidia.com/v1",
-        default_model="meta/llama-3.1-70b-instruct", aliases=["nvidia"], icon="💚",
+        default_model="meta/llama-3.1-70b-instruct", aliases=["nvidia"], icon="NVD",
     ),
     ProviderDefinition(
         id="ai21", name="AI21 Labs", description="Jamba models with long context windows",
         kind="openai-compatible", base_url="https://api.ai21.com/v1",
-        default_model="jamba-1.5-large", aliases=[], icon="🃏",
+        default_model="jamba-1.5-large", aliases=[], icon="A21",
     ),
     ProviderDefinition(
         id="databricks", name="Databricks", description="Serving endpoints for fine-tuned models (set base URL to your workspace)",
         kind="openai-compatible", base_url="https://dbc-xxxxxxxx.cloud.databricks.com/serving-endpoints",
         default_model="databricks-dbrx-instruct",
-        aliases=[], icon="🧱",
+        aliases=[], icon="DBS",
     ),
     ProviderDefinition(
         id="replicate", name="Replicate", description="Run open-source models in the cloud",
         kind="openai-compatible", base_url="https://api.replicate.com/v1",
-        default_model="meta/llama-2-70b-chat", aliases=[], icon="🔁",
+        default_model="meta/llama-2-70b-chat", aliases=[], icon="RPL",
     ),
     ProviderDefinition(
         id="siliconflow", name="SiliconFlow", description="Cost-effective inference for 200+ models",
         kind="openai-compatible", base_url="https://api.siliconflow.cn/v1",
-        default_model="deepseek-ai/DeepSeek-V3", aliases=[], icon="🌊",
+        default_model="deepseek-ai/DeepSeek-V3", aliases=[], icon="SFL",
     ),
     ProviderDefinition(
         id="nebius", name="Nebius", description="Cloud GPU platform for AI inference",
         kind="openai-compatible", base_url="https://api.studio.nebius.ai/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="☁️",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="NEB",
     ),
     ProviderDefinition(
         id="lepton", name="Lepton AI", description="Serverless inference with auto-scaling",
         kind="openai-compatible", base_url="https://api.lepton.ai/v1",
-        default_model="meta-llama/Llama-3.2-70B-Instruct", aliases=[], icon="⚛️",
+        default_model="meta-llama/Llama-3.2-70B-Instruct", aliases=[], icon="LPT",
     ),
     ProviderDefinition(
         id="lambda", name="Lambda Labs", description="GPU cloud for AI training and inference",
         kind="openai-compatible", base_url="https://api.lambdalabs.com/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["lambda-labs"], icon="λ",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["lambda-labs"], icon="LDA",
     ),
     ProviderDefinition(
         id="kluster", name="Kluster AI", description="Distributed GPU network for inference",
         kind="openai-compatible", base_url="https://api.kluster.ai/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🔗",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="KLU",
     ),
     ProviderDefinition(
         id="upstage", name="Upstage", description="Solar Mini and Pro models for Korean and English",
         kind="openai-compatible", base_url="https://api.upstage.ai/v1",
-        default_model="solar-pro", aliases=[], icon="☀️",
+        default_model="solar-pro", aliases=[], icon="UPS",
     ),
     ProviderDefinition(
         id="yi", name="Yi (01.AI)", description="Yi-Large and Yi-34B models",
         kind="openai-compatible", base_url="https://api.01.ai/v1",
-        default_model="yi-large", aliases=["01-ai", "yi-ai"], icon="🎯",
+        default_model="yi-large", aliases=["01-ai", "yi-ai"], icon="YI",
     ),
     ProviderDefinition(
         id="volcengine", name="Volcengine", description="ByteDance's Ark platform for Doubao models",
         kind="openai-compatible", base_url="https://ark.cn-beijing.volces.com/api/v3",
-        default_model="doubao-pro-32k", aliases=["ark", "bytedance"], icon="🌋",
+        default_model="doubao-pro-32k", aliases=["ark", "bytedance"], icon="VOL",
     ),
     ProviderDefinition(
         id="hunyuan", name="Tencent Hunyuan", description="Tencent's Hunyuan large language models",
         kind="openai-compatible", base_url="https://api.hunyuan.cloud.tencent.com/v1",
-        default_model="hunyuan-turbos-latest", aliases=["tencent"], icon="🐧",
+        default_model="hunyuan-turbos-latest", aliases=["tencent"], icon="HUN",
     ),
     ProviderDefinition(
         id="cloudflare-ai", name="Cloudflare Workers AI", description="Serverless AI inference at the edge",
         kind="openai-compatible", base_url="https://api.cloudflare.com/client/v4",
         default_model="@cf/meta/llama-3.1-70b-instruct",
-        aliases=["cf-ai"], icon="orange",
+        aliases=["cf-ai"], icon="CFL",
     ),
     ProviderDefinition(
         id="monsterapi", name="Monster API", description="Affordable GPU inference for open models",
         kind="openai-compatible", base_url="https://api.monsterapi.ai/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="👾",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="MST",
     ),
     ProviderDefinition(
         id="baseten", name="Baseten", description="Model deployment and serving platform",
         kind="openai-compatible", base_url="https://inference.baseten.co/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="🏗️",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="BST",
     ),
     ProviderDefinition(
         id="anyscale", name="Anyscale", description="Ray-based scalable model serving",
         kind="openai-compatible", base_url="https://api.endpoints.anyscale.com/v1",
-        default_model="meta-llama/Llama-3.1-70B-Instruct", aliases=[], icon="📐",
+        default_model="meta-llama/Llama-3.1-70B-Instruct", aliases=[], icon="ANY",
     ),
     ProviderDefinition(
         id="jan", name="Jan", description="Local AI model server with web UI",
         kind="openai-compatible", base_url="http://localhost:1337/v1",
-        default_model="local", aliases=[], auth_method="none", icon="🖥️",
+        default_model="local", aliases=[], auth_method="none", icon="JAN",
     ),
     ProviderDefinition(
         id="llamacpp", name="Llama.cpp Server", description="Local C++ inference server",
         kind="openai-compatible", base_url="http://localhost:8080",
-        default_model="local", aliases=["llama-cpp"], auth_method="none", icon="🦙",
+        default_model="local", aliases=["llama-cpp"], auth_method="none", icon="LPP",
     ),
     ProviderDefinition(
         id="watsonx", name="IBM Watsonx", description="Enterprise AI platform with Granite models",
         kind="openai-compatible", base_url="https://us-south.ml.cloud.ibm.com",
         default_model="ibm/granite-3-8b-instruct",
-        aliases=["ibm"], icon="🔷",
+        aliases=["ibm"], icon="IBM",
     ),
     ProviderDefinition(
-        id="aleph-alpha", name="Aleph Alpha", description="European sovereign AI — Luminous models",
+        id="aleph-alpha", name="Aleph Alpha", description="European sovereign AI Luminous models",
         kind="openai-compatible", base_url="https://api.aleph-alpha.eu/v1",
-        default_model="luminous-supreme-control", aliases=[], icon="α",
+        default_model="luminous-supreme-control", aliases=[], icon="ALP",
     ),
     ProviderDefinition(
         id="predibase", name="Predibase", description="Fine-tune and serve open-source LLMs",
         kind="openai-compatible", base_url="https://serving.app.predibase.com/v1",
-        default_model="meta-llama/Meta-Llama-3.1-8B-Instruct", aliases=[], icon="🎯",
+        default_model="meta-llama/Meta-Llama-3.1-8B-Instruct", aliases=[], icon="PDB",
     ),
     ProviderDefinition(
         id="gravity", name="Gravity API", description="Multi-model API gateway",
         kind="openai-compatible", base_url="https://api.gravityapi.com/v1",
-        default_model="auto", aliases=[], icon="🌌",
+        default_model="auto", aliases=[], icon="GRV",
     ),
     ProviderDefinition(
         id="infermatic", name="Infermatic", description="Fast inference for popular open models",
         kind="openai-compatible", base_url="https://api.infermatic.ai/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="💡",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="INF",
     ),
 ]
+
 
 _BY_ID: dict[str, ProviderDefinition] = {p.id: p for p in _BUILTIN}
 

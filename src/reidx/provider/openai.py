@@ -2,7 +2,7 @@
 
 Speaks the OpenAI Chat Completions API (POST /v1/chat/completions). The same
 wire format is spoken by llama.cpp's server (`/v1/chat/completions`) and by
-LM Studio's local server — see `OpenAICompatibleProvider` below for the
+LM Studio's local server - see `OpenAICompatibleProvider` below for the
 local-endpoint variant that skips the auth header when no key is set.
 
 Tool schemas ReidX produces (`ToolBase.schema()`) are already OpenAI-style,
@@ -24,6 +24,7 @@ class OpenAIProvider(BaseProvider):
     name = "openai"
     DEFAULT_BASE_URL = "https://api.openai.com"
     DEFAULT_MODEL = "gpt-4o-mini"
+    MODELS_PATH = "/v1/models"
 
     def __init__(
         self,
@@ -126,7 +127,7 @@ class OpenAIProvider(BaseProvider):
         return self._parse(body, model)
 
     def fetch_models(self) -> list[str]:
-        url = f"{self.base_url}/v1/models"
+        url = f"{self.base_url}{self.MODELS_PATH}"
         body = get_json(url, self._headers())
         models: list[str] = []
         for item in body.get("data", []):
@@ -148,6 +149,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
     name = "openai-compatible"
     DEFAULT_BASE_URL = "http://localhost:8080"
     DEFAULT_MODEL = "local"
+    MODELS_PATH = "/v1/models"
 
     def __init__(
         self,
