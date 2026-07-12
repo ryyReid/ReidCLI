@@ -456,6 +456,7 @@ class ProviderPalette:
             existing = self.db.get_provider(d.name)
             if existing:
                 self.current_provider = existing
+                self._register_current()
                 self.screen = self.MANAGE
             else:
                 sp = StoredProvider(
@@ -475,6 +476,7 @@ class ProviderPalette:
             self.screen = self.MANAGE
             self.selected_index = 0
             self._scroll_offset = 0
+            self._register_current()
             self._invalidate()
 
     def _on_keys_select(self, item: PaletteItem) -> None:
