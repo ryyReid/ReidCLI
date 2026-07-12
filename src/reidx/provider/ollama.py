@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from reidx.diagnostics.logger import get_logger
-from reidx.provider._http import post_json
+from reidx.provider._http import get_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
 
 log = get_logger("reidx.provider.ollama")
@@ -107,3 +107,16 @@ class OllamaProvider(BaseProvider):
             ),
             stop_reason=body.get("done_reason", "stop"),
         )
+
+    def fetch_models(self) -> list[str]:
+        try:
+            body = get_json(f"{self.base_url}/api/tags", {})
+        except RuntimeError:
+            log.debug("failed to fetch models from ollama")
+            return []
+        models: list[str] = []
+        for item in body.get("models", []):
+            name = item.get("name", "")
+            if name:
+                models.append(name)
+        return sorted(models)

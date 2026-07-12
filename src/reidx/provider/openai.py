@@ -14,7 +14,7 @@ import os
 from typing import Any
 
 from reidx.diagnostics.logger import get_logger
-from reidx.provider._http import post_json
+from reidx.provider._http import get_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
 
 log = get_logger("reidx.provider.openai")
@@ -124,6 +124,20 @@ class OpenAIProvider(BaseProvider):
             log.exception("OpenAI-compatible request failed")
             raise
         return self._parse(body, model)
+
+    def fetch_models(self) -> list[str]:
+        url = f"{self.base_url}/v1/models"
+        try:
+            body = get_json(url, self._headers())
+        except RuntimeError:
+            log.debug("failed to fetch models from %s", url)
+            return []
+        models: list[str] = []
+        for item in body.get("data", []):
+            mid = item.get("id", "")
+            if mid:
+                models.append(mid)
+        return sorted(models)
 
 
 class OpenAICompatibleProvider(OpenAIProvider):

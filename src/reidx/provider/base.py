@@ -48,3 +48,6 @@ class BaseProvider(ABC):
         model: str | None = None,
     ) -> ProviderResponse:
         """Run one model turn. Returns text and/or tool calls."""
+
+    def fetch_models(self) -> list[str]:
+        return []

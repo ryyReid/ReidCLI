@@ -24,12 +24,13 @@ import json
 import os
 from pathlib import Path
 
+from reidx.config.storage import app_data_dir
 from reidx.diagnostics.logger import get_logger
 
 log = get_logger("reidx.config.settings")
 
 LEGACY_SETTINGS_PATH = Path("E:/leech/Reidchat.json")
-GLOBAL_SETTINGS_PATH = Path.home() / ".reidx" / "settings.json"
+GLOBAL_SETTINGS_PATH = app_data_dir() / "settings.json"
 PROJECT_SETTINGS_FILENAME = "settings.json"
 
 

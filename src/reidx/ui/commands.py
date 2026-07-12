@@ -10,15 +10,22 @@ from, so they can't drift out of sync.
 """
 from __future__ import annotations
 
-from pathlib import Path
+import uuid
 
 from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
+from reidx.config.storage import storage_root
 from reidx.goals.models import Goal, GoalNodeKind, GoalStatus
 from reidx.policy.models import PermissionMode
-from reidx.provider.store import SUPPORTED_KINDS, ProviderRecord, ProviderStore, build_provider
+from reidx.provider.store import (
+    SUPPORTED_KINDS,
+    ProviderRecord,
+    ProviderStore,
+    build_provider,
+    validate_provider,
+)
 from reidx.runtime.orchestrator import Orchestrator
 from reidx.ui import render
 from reidx.ui.theme import APP_NAME, BOX, PRIMARY
@@ -472,8 +479,46 @@ _BUILTIN_PROVIDER_NAMES = ("stub", "anthropic")
 
 
 def _providers_store(orchestrator: Orchestrator) -> ProviderStore:
-    root = orchestrator.config.storage_root or (Path.home() / ".reidx")
+    root = orchestrator.config.storage_root or storage_root()
     return ProviderStore(root)
+
+
+def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> None:
+    from reidx.provider_manager import keychain
+    from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
+
+    root = orchestrator.config.storage_root or storage_root()
+    db = ProviderDatabase(root)
+    existing = db.get_provider(record.name)
+    if existing:
+        if record.api_key:
+            k = StoredKey(
+                id=uuid.uuid4().hex[:12],
+                label="Default",
+                encrypted_key=keychain.encrypt(record.api_key),
+            )
+            existing.keys.append(k)
+            if existing.active_key_id is None:
+                existing.active_key_id = k.id
+        existing.kind = record.kind
+        existing.base_url = record.base_url
+        if record.default_model:
+            existing.default_model = record.default_model
+        db.save_provider(existing)
+    else:
+        sp = StoredProvider(
+            name=record.name, kind=record.kind, base_url=record.base_url,
+            default_model=record.default_model,
+        )
+        if record.api_key:
+            k = StoredKey(
+                id=uuid.uuid4().hex[:12],
+                label="Default",
+                encrypted_key=keychain.encrypt(record.api_key),
+            )
+            sp.keys.append(k)
+            sp.active_key_id = k.id
+        db.save_provider(sp)
 
 
 def _handle_providers(orchestrator: Orchestrator) -> None:
@@ -507,12 +552,28 @@ def _handle_connect(orchestrator: Orchestrator, arg: str) -> None:
     api_key = parts[3] if len(parts) > 3 else ""
     model = parts[4] if len(parts) > 4 else ""
     record = ProviderRecord(name=name, kind=kind, base_url=base_url, api_key=api_key, default_model=model)
+    if api_key:
+        ok, msg = validate_provider(record)
+        if not ok:
+            render.print_error(f"key validation failed: {msg}")
+            return
+        render.print_info(f"key validated: {msg}")
     try:
         provider = build_provider(record)
     except ValueError as exc:
         render.print_error(f"failed to build provider: {exc}")
         return
+    if not model and api_key:
+        try:
+            models = provider.fetch_models()
+        except Exception:
+            models = []
+        if models:
+            provider.default_model = models[0]
+            record.default_model = models[0]
+            render.print_info(f"auto-detected model: {models[0]}")
     _providers_store(orchestrator).save(record)
+    _save_to_database(orchestrator, record)
     if orchestrator.providers is not None:
         orchestrator.providers.register(name, provider)
     render.print_info(f"connected provider '{name}' ({kind}) → {base_url or '(default)'}")

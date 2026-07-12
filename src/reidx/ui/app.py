@@ -458,8 +458,10 @@ class ChatApp:
         if self._palette is not None:
             return
         from pathlib import Path
-        storage_root = self.orchestrator.config.storage_root or (Path.home() / ".reidx")
-        db = ProviderDatabase(Path(storage_root))
+
+        from reidx.config.storage import storage_root as get_storage_root
+        root = self.orchestrator.config.storage_root or get_storage_root()
+        db = ProviderDatabase(Path(root))
         self._palette = ProviderPalette(
             db=db,
             orchestrator=self.orchestrator,

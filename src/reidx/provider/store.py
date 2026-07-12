@@ -125,11 +125,25 @@ class ProviderStore:
         return True
 
 
+def validate_provider(record: ProviderRecord) -> tuple[bool, str]:
+    try:
+        provider = build_provider(record)
+    except (ValueError, TypeError) as exc:
+        return False, str(exc)
+    if not record.api_key and record.kind != "ollama":
+        return True, "no key required"
+    try:
+        models = provider.fetch_models()
+    except Exception:
+        return False, "could not connect to provider"
+    if models:
+        return True, f"ok ({len(models)} models available)"
+    if record.kind == "ollama":
+        return True, "connected"
+    return False, "key rejected or no models returned"
+
+
 def load_into(registry: ProviderRegistry, storage_root: Path) -> list[str]:
-    """Register every persisted provider into `registry`. Returns the list of
-    names successfully registered. Skips (with a warning) any record whose
-    kind is unknown or fails to construct — the app must not crash on a
-    single bad entry."""
     added: list[str] = []
     store = ProviderStore(storage_root)
     for record in store.list():
@@ -138,4 +152,40 @@ def load_into(registry: ProviderRegistry, storage_root: Path) -> list[str]:
             added.append(record.name)
         except (ValueError, TypeError):
             log.exception("skipping provider %s (kind=%s): failed to build", record.name, record.kind)
+    return added
+
+
+def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[str]:
+    from reidx.provider_manager.database import ProviderDatabase
+
+    added: list[str] = []
+    db = ProviderDatabase(storage_root)
+    for sp in db.list_providers():
+        if registry.has(sp.name):
+            continue
+        api_key = sp.decrypted_api_key()
+        record = ProviderRecord(
+            name=sp.name,
+            kind=sp.kind,
+            base_url=sp.base_url,
+            api_key=api_key,
+            default_model=sp.default_model,
+        )
+        try:
+            provider = build_provider(record)
+        except (ValueError, TypeError):
+            log.warning("skipping provider %s (kind=%s): failed to build", sp.name, sp.kind)
+            continue
+        if not record.default_model:
+            try:
+                models = provider.fetch_models()
+            except Exception:
+                models = []
+            if models:
+                provider.default_model = models[0]
+                sp.default_model = models[0]
+                db.save_provider(sp)
+                log.info("auto-fetched model for %s: %s", sp.name, models[0])
+        registry.register(sp.name, provider)
+        added.append(sp.name)
     return added

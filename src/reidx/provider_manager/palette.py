@@ -9,7 +9,7 @@ from typing import Any
 from prompt_toolkit.buffer import Buffer
 
 from reidx.diagnostics.logger import get_logger
-from reidx.provider.store import ProviderRecord, build_provider
+from reidx.provider.store import ProviderRecord, build_provider, validate_provider
 from reidx.provider_manager.catalog import (
     ProviderDefinition,
     all_providers,
@@ -602,6 +602,25 @@ class ProviderPalette:
         auth = d.get("auth_method", "bearer")
         api_key = d.get("api_key", "").strip()
 
+        if api_key:
+            record = ProviderRecord(
+                name=name, kind=kind, base_url=base_url,
+                api_key=api_key, default_model=model,
+            )
+            ok, msg = validate_provider(record)
+            if not ok:
+                self._show_message(f"Key validation failed: {msg}", self.WIZARD)
+                self.wizard_step_idx = len(WIZARD_STEPS) - 1
+                return
+            if not model:
+                try:
+                    provider = build_provider(record)
+                    models = provider.fetch_models()
+                except Exception:
+                    models = []
+                if models:
+                    model = models[0]
+
         existing = self.db.get_provider(name)
         if existing:
             existing.kind = kind
@@ -647,10 +666,19 @@ class ProviderPalette:
         if not self.current_provider:
             return
         name = self.current_provider.name
+        sp = self.current_provider
+        record = ProviderRecord(
+            name=name, kind=sp.kind, base_url=sp.base_url,
+            api_key=api_key, default_model=sp.default_model,
+        )
+        ok, msg = validate_provider(record)
+        if not ok:
+            self._show_message(f"Key validation failed: {msg}", self.MANAGE)
+            return
         self.db.add_key(name, label, api_key)
         self.current_provider = self.db.get_provider(name)
         self._register_current()
-        self._show_message(f"Added key '{label}'", self.MANAGE)
+        self._show_message(f"Added key '{label}' ({msg})", self.MANAGE)
 
     def _do_delete_key(self, key_id: str, label: str) -> str:
         if not self.current_provider:
@@ -682,6 +710,15 @@ class ProviderPalette:
                 api_key=api_key, default_model=sp.default_model,
             )
             provider = build_provider(record)
+            if not sp.default_model:
+                try:
+                    models = provider.fetch_models()
+                except Exception:
+                    models = []
+                if models:
+                    provider.default_model = models[0]
+                    sp.default_model = models[0]
+                    self.db.save_provider(sp)
             self.orchestrator.providers.register(sp.name, provider)
         except (ValueError, TypeError):
             log.exception("failed to register provider %s", sp.name)

@@ -27,3 +27,16 @@ def post_json(url: str, payload: dict, headers: dict[str, str], timeout: int = T
     except urllib.error.URLError as exc:
         raise RuntimeError(f"connection error: {exc}") from exc
     return json.loads(raw)
+
+
+def get_json(url: str, headers: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> dict:
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"HTTP {exc.code}: {err_body}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"connection error: {exc}") from exc
+    return json.loads(raw)

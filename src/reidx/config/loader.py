@@ -11,11 +11,12 @@ from pathlib import Path
 
 from reidx.config.models import Config, default_config
 from reidx.config.settings import apply_settings_env, read_reidx_block
+from reidx.config.storage import storage_root
 from reidx.diagnostics.logger import get_logger
 
 log = get_logger("reidx.config")
 
-GLOBAL_DIR = Path.home() / ".reidx"
+GLOBAL_DIR = storage_root()
 PROJECT_DIR = Path(".reidx")
 CONFIG_FILENAME = "config.json"
 

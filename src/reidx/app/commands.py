@@ -16,9 +16,11 @@ from reidx import __version__
 from reidx.automation.exec import exec_run
 from reidx.config.loader import ConfigLoader
 from reidx.config.models import Config
+from reidx.config.storage import storage_root
 from reidx.deepreid import format_markdown, run_deepreid, save_deepreid_result
 from reidx.diagnostics.logger import get_logger
 from reidx.provider.registry import default_registry
+from reidx.provider.store import load_from_database
 from reidx.provider.store import load_into as load_stored_providers
 from reidx.runtime.orchestrator import Orchestrator
 from reidx.tools import default_registry as tools_registry
@@ -97,11 +99,9 @@ def _main(
 def build_orchestrator(config: Config | None = None) -> Orchestrator:
     cfg = config or ConfigLoader().load()
     providers = default_registry(cfg)
-    load_stored_providers(providers, cfg.storage_root or (Path.home() / ".reidx"))
-    # `/connect` may have persisted a provider that isn't yet `cfg.default_provider`.
-    # We never auto-promote — stub stays default unless the user did `/use` last
-    # session (that's a session setting, not a config change). Fall back to stub
-    # if the configured default isn't registered.
+    root = cfg.storage_root or storage_root()
+    load_stored_providers(providers, root)
+    load_from_database(providers, root)
     default_name = cfg.default_provider if providers.has(cfg.default_provider) else "stub"
     provider = providers.get(default_name)
     return Orchestrator(cfg, provider, tools_registry(), providers=providers)
