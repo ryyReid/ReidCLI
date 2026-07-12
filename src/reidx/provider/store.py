@@ -23,6 +23,11 @@ from pathlib import Path
 from reidx.diagnostics.logger import get_logger
 from reidx.provider.anthropic import AnthropicProvider
 from reidx.provider.base import BaseProvider
+from reidx.provider.models import (
+    denormalize_model_id,
+    normalize_model_id,
+    validate_model_against_provider,
+)
 from reidx.provider.ollama import OllamaProvider
 from reidx.provider.openai import OpenAICompatibleProvider, OpenAIProvider
 from reidx.provider.registry import ProviderRegistry
@@ -153,6 +158,16 @@ def validate_provider(
         return False, f"{msg} (use --skip-verify to save anyway)"
     except Exception as exc:
         return False, f"unexpected error: {exc} (use --skip-verify to save anyway)"
+    
+    if models and record.default_model:
+        normalized = normalize_model_id(record.default_model, provider_name=record.name)
+        if normalized.is_valid:
+            is_valid, msg = validate_model_against_provider(normalized, models)
+            if not is_valid:
+                return False, f"model validation failed: {msg}"
+            # Update the record with the normalized model ID
+            record.default_model = denormalize_model_id(normalized)
+    
     if models:
         return True, f"ok ({len(models)} models available)"
     return True, "connected (no models endpoint or empty list)"
@@ -172,6 +187,7 @@ def load_into(registry: ProviderRegistry, storage_root: Path) -> list[str]:
 
 def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[str]:
     from reidx.provider_manager.database import ProviderDatabase
+    from reidx.provider.models import denormalize_model_id, normalize_model_id
 
     added: list[str] = []
     db = ProviderDatabase(storage_root)
@@ -198,10 +214,22 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             except Exception:
                 models = []
             if models:
-                provider.default_model = models[0]
-                sp.default_model = models[0]
+                normalized = normalize_model_id(models[0], provider_name=sp.name)
+                if normalized.is_valid:
+                    model = denormalize_model_id(normalized)
+                    provider.default_model = model
+                    sp.default_model = model
+                    db.save_provider(sp)
+                    log.info("auto-fetched model for %s: %s", sp.name, model)
+        elif record.default_model:
+            # Normalize the existing model
+            normalized = normalize_model_id(record.default_model, provider_name=sp.name)
+            if normalized.is_valid:
+                model = denormalize_model_id(normalized)
+                record.default_model = model
+                provider.default_model = model
+                sp.default_model = model
                 db.save_provider(sp)
-                log.info("auto-fetched model for %s: %s", sp.name, models[0])
         registry.register(sp.name, provider)
         added.append(sp.name)
     return added

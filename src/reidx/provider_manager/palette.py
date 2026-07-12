@@ -9,6 +9,14 @@ from typing import Any
 from prompt_toolkit.buffer import Buffer
 
 from reidx.diagnostics.logger import get_logger
+from reidx.provider.models import (
+    ModelCache,
+    NormalizedModel,
+    denormalize_model_id,
+    fetch_provider_models,
+    normalize_model_id,
+    validate_model_against_provider,
+)
 from reidx.provider.store import ProviderRecord, build_provider, validate_provider
 from reidx.provider_manager.catalog import (
     ProviderDefinition,
@@ -265,6 +273,12 @@ class ProviderPalette:
     def on_enter(self) -> None:
         if self.is_input_screen():
             self._handle_input_enter()
+            self._invalidate()
+            return
+        if self.screen == self.MESSAGE:
+            self.screen = self._message_next
+            self.selected_index = 0
+            self._scroll_offset = 0
             self._invalidate()
             return
         items = self._build_items()
@@ -626,7 +640,9 @@ class ProviderPalette:
                 except Exception:
                     models = []
                 if models:
-                    model = models[0]
+                    normalized = normalize_model_id(models[0], provider_name=name)
+                    if normalized.is_valid:
+                        model = denormalize_model_id(normalized)
 
         self._commit_wizard_provider(name, kind, base_url, model, auth, api_key)
 
@@ -750,9 +766,11 @@ class ProviderPalette:
                 except Exception:
                     models = []
                 if models:
-                    provider.default_model = models[0]
-                    sp.default_model = models[0]
-                    self.db.save_provider(sp)
+                    normalized = normalize_model_id(models[0], provider_name=sp.name)
+                    if normalized.is_valid:
+                        provider.default_model = denormalize_model_id(normalized)
+                        sp.default_model = denormalize_model_id(normalized)
+                        self.db.save_provider(sp)
             self.orchestrator.providers.register(sp.name, provider)
         except (ValueError, TypeError):
             log.exception("failed to register provider %s", sp.name)

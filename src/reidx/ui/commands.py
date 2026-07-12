@@ -19,6 +19,7 @@ from rich.text import Text
 from reidx.config.storage import storage_root
 from reidx.goals.models import Goal, GoalNodeKind, GoalStatus
 from reidx.policy.models import PermissionMode
+from reidx.provider.models import denormalize_model_id, normalize_model_id
 from reidx.provider.store import (
     SUPPORTED_KINDS,
     ProviderRecord,
@@ -486,6 +487,7 @@ def _providers_store(orchestrator: Orchestrator) -> ProviderStore:
 def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> None:
     from reidx.provider_manager import keychain
     from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
+    from reidx.provider.models import denormalize_model_id, normalize_model_id
 
     root = orchestrator.config.storage_root or storage_root()
     db = ProviderDatabase(root)
@@ -504,7 +506,11 @@ def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> Non
         existing.base_url = record.base_url
         existing.auth_method = record.auth_method
         if record.default_model:
-            existing.default_model = record.default_model
+            normalized = normalize_model_id(record.default_model, provider_name=record.name)
+            if normalized.is_valid:
+                existing.default_model = denormalize_model_id(normalized)
+            else:
+                existing.default_model = record.default_model
         db.save_provider(existing)
     else:
         sp = StoredProvider(
@@ -519,6 +525,12 @@ def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> Non
             )
             sp.keys.append(k)
             sp.active_key_id = k.id
+        if record.default_model:
+            normalized = normalize_model_id(record.default_model, provider_name=record.name)
+            if normalized.is_valid:
+                sp.default_model = denormalize_model_id(normalized)
+            else:
+                sp.default_model = record.default_model
         db.save_provider(sp)
 
 
@@ -577,14 +589,17 @@ def _handle_connect(orchestrator: Orchestrator, arg: str) -> None:
         except Exception:
             models = []
         if models:
-            provider.default_model = models[0]
-            record.default_model = models[0]
-            render.print_info(f"auto-detected model: {models[0]}")
+            normalized = normalize_model_id(models[0], provider_name=name)
+            if normalized.is_valid:
+                model = denormalize_model_id(normalized)
+                provider.default_model = model
+                record.default_model = model
+                render.print_info(f"auto-detected model: {model}")
     _providers_store(orchestrator).save(record)
     _save_to_database(orchestrator, record)
     if orchestrator.providers is not None:
         orchestrator.providers.register(name, provider)
-    render.print_info(f"connected provider '{name}' ({kind}) → {base_url or '(default)'}")
+    render.print_info(f"connected provider '{name}' ({kind})  {base_url or '(default)'}")
     render.print_info(f"switch with: /use {name}")
 
 
