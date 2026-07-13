@@ -60,6 +60,16 @@ _CONNECT_PARAMS = {
             "type": "string",
             "description": "Default model id for this provider.",
         },
+        "auth_method": {
+            "type": "string",
+            "enum": ["bearer", "x-api-key", "oauth", "none"],
+            "description": "Authentication method. Use 'oauth' for browser/device auth (OpenAI, Anthropic).",
+        },
+        "oauth_flow": {
+            "type": "string",
+            "enum": ["browser", "device"],
+            "description": "OAuth flow to use: 'browser' opens a window, 'device' shows a code for headless auth.",
+        },
         "activate": {
             "type": "boolean",
             "description": "If true (default), switch the session to this provider after save.",
@@ -252,6 +262,8 @@ class ConnectProviderTool(BaseTool):
         base_url = str(args.get("base_url") or "").strip()
         api_key = str(args.get("api_key") or "").strip()
         default_model = str(args.get("default_model") or "").strip()
+        auth_method = str(args.get("auth_method") or "").strip()
+        oauth_flow = str(args.get("oauth_flow") or "").strip()
         activate = args.get("activate")
         if activate is None:
             activate = True
@@ -272,10 +284,11 @@ class ConnectProviderTool(BaseTool):
             kind = kind or pdef.kind
             base_url = base_url or pdef.base_url
             default_model = default_model or pdef.default_model
-            auth_method = pdef.auth_method
+            auth_method = auth_method or pdef.auth_method
             catalog_id = pdef.id
         else:
-            auth_method = "bearer"
+            if not auth_method:
+                auth_method = "bearer"
             if not name:
                 return ToolResult.fail("name or catalog_id required")
             if kind not in ("anthropic", "openai", "openai-compatible", "ollama"):
@@ -289,6 +302,33 @@ class ConnectProviderTool(BaseTool):
         if name.lower() in ("stub",):
             return ToolResult.fail("cannot replace built-in stub via connect_provider")
 
+        oauth_tokens = None
+        if auth_method == "oauth" and kind in ("openai", "anthropic"):
+            if oauth_flow == "browser":
+                from reidx.provider.oauth import run_browser_oauth
+
+                prompt = f"Open browser to authorize {name} ({kind})?"
+                if ctx.resolve_decision(prompt) is PermissionDecision.DENY:
+                    return ToolResult.fail("oauth authorization denied by user")
+                oauth_tokens = run_browser_oauth(kind)
+                if not oauth_tokens:
+                    return ToolResult.fail("oauth authorization failed or was cancelled")
+            elif oauth_flow == "device":
+                from reidx.provider.oauth import run_device_oauth
+
+                def show_code(user_code: str, uri: str) -> None:
+                    ctx.emit("oauth_device_code", {"user_code": user_code, "url": uri})
+
+                prompt = f"Use device code flow for {name} ({kind})? User code will be shown."
+                if ctx.resolve_decision(prompt) is PermissionDecision.DENY:
+                    return ToolResult.fail("oauth authorization denied by user")
+                oauth_tokens = run_device_oauth(kind, show_code)
+                if not oauth_tokens:
+                    return ToolResult.fail("oauth device authorization failed or timed out")
+            else:
+                return ToolResult.fail("oauth_flow must be 'browser' or 'device' for OAuth providers")
+            api_key = oauth_tokens.access_token
+
         # User must approve storing a key / adding a remote backend.
         prompt = f"Connect provider '{name}' ({kind}) and store credentials?"
         if api_key:
@@ -299,6 +339,7 @@ class ConnectProviderTool(BaseTool):
         from reidx.provider.store import ProviderRecord, build_provider
         from reidx.provider_manager import keychain
         from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
+        from reidx.provider.oauth import OAuthTokens
 
         root = _storage_root(orch)
         db = ProviderDatabase(root)
@@ -312,6 +353,10 @@ class ConnectProviderTool(BaseTool):
                     api_key=api_key,
                     default_model=default_model,
                     auth_method=auth_method if catalog_id else "bearer",
+                    oauth_access_token=oauth_tokens.access_token if oauth_tokens else "",
+                    oauth_refresh_token=oauth_tokens.refresh_token if oauth_tokens else "",
+                    oauth_expires_at=oauth_tokens.expires_at if oauth_tokens else 0,
+                    oauth_provider=kind if oauth_tokens else "",
                 )
             )
         except (ValueError, TypeError) as exc:
@@ -320,10 +365,10 @@ class ConnectProviderTool(BaseTool):
         keys: list[StoredKey] = []
         active_key_id = None
         existing = db.get_provider(name)
-        if existing and existing.keys and not api_key:
+        if existing and existing.keys and not api_key and not oauth_tokens:
             keys = existing.keys
             active_key_id = existing.active_key_id
-        elif api_key:
+        elif api_key and not oauth_tokens:
             kid = uuid.uuid4().hex[:12]
             keys = [
                 StoredKey(
@@ -344,6 +389,8 @@ class ConnectProviderTool(BaseTool):
             keys=keys,
             active_key_id=active_key_id,
         )
+        if oauth_tokens:
+            sp.oauth_tokens = oauth_tokens
         db.save_provider(sp)
         _register_live(orch, name, provider, catalog_id=catalog_id or None)
 
@@ -373,6 +420,8 @@ class ConnectProviderTool(BaseTool):
                 )
 
         msg = f"connected '{name}' ({kind})"
+        if auth_method == "oauth":
+            msg += " [OAuth]"
         if activated:
             msg += f" · active · model={model_set or '?'}"
         else:

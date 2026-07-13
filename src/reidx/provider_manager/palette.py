@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import shutil
 import uuid
@@ -22,6 +22,7 @@ from reidx.provider_manager.catalog import (
     search as catalog_search,
 )
 from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
+from reidx.provider.oauth import run_browser_oauth, run_device_oauth
 
 log = get_logger("reidx.provider_manager.palette")
 
@@ -67,6 +68,7 @@ WIZARD_STEPS: list[WizardStep] = [
     WizardStep("kind", "Provider Kind", is_text=False),
     WizardStep("default_model", "Default Model", optional=True),
     WizardStep("auth_method", "Authentication Method", is_text=False),
+    WizardStep("oauth_flow", "OAuth Flow", is_text=False, optional=True),
     WizardStep("api_key", "API Key", optional=True, is_password=True),
 ]
 
@@ -80,7 +82,13 @@ KIND_OPTIONS = [
 AUTH_OPTIONS = [
     PaletteItem("bearer", "Authorization: Bearer <key>", icon="B"),
     PaletteItem("x-api-key", "x-api-key: <key> header", icon="X"),
+    PaletteItem("oauth", "OAuth browser/device authorization", icon="O"),
     PaletteItem("none", "No authentication required", icon="N"),
+]
+
+OAUTH_FLOW_OPTIONS = [
+    PaletteItem("browser", "Open browser for authorization (recommended)", icon="B"),
+    PaletteItem("device", "Device code flow for headless/remote", icon="D"),
 ]
 
 
@@ -315,6 +323,8 @@ class ProviderPalette:
                     return KIND_OPTIONS
                 if step.field == "auth_method":
                     return AUTH_OPTIONS
+                if step.field == "oauth_flow":
+                    return OAUTH_FLOW_OPTIONS
             return []
         if self.screen == self.MODELS:
             return self._models_items()
@@ -667,19 +677,51 @@ class ProviderPalette:
         base_url = d.get("base_url", "").strip()
         model = d.get("default_model", "").strip()
         auth = d.get("auth_method", "bearer")
+        oauth_flow = d.get("oauth_flow", "").strip()
         api_key = d.get("api_key", "").strip()
+
+        oauth_tokens = None
+        if auth == "oauth" and kind in ("openai", "anthropic"):
+            if oauth_flow == "browser":
+                from reidx.provider.oauth import run_browser_oauth
+
+                self._show_message(f"Opening browser for {name} OAuth...", self.LIST)
+                oauth_tokens = run_browser_oauth(kind)
+                if not oauth_tokens:
+                    self._show_message("OAuth authorization failed or cancelled", self.LIST)
+                    return
+                api_key = oauth_tokens.access_token
+            elif oauth_flow == "device":
+                from reidx.provider.oauth import run_device_oauth
+
+                def show_code(user_code: str, uri: str) -> None:
+                    self._show_message(f"Device code: {user_code}\nVisit: {uri}", self.LIST)
+                
+                oauth_tokens = run_device_oauth(kind, show_code)
+                if not oauth_tokens:
+                    self._show_message("OAuth device authorization failed or timed out", self.LIST)
+                    return
+                api_key = oauth_tokens.access_token
+            else:
+                self._show_message("Select OAuth flow: browser or device", self.LIST)
+                return
 
         if api_key:
             record = ProviderRecord(
                 name=name, kind=kind, base_url=base_url,
                 api_key=api_key, default_model=model,
                 auth_method=auth,
+                oauth_access_token=oauth_tokens.access_token if oauth_tokens else "",
+                oauth_refresh_token=oauth_tokens.refresh_token if oauth_tokens else "",
+                oauth_expires_at=int(oauth_tokens.expires_at) if oauth_tokens else 0,
+                oauth_provider=kind if oauth_tokens else "",
             )
             ok, msg = validate_provider(record)
             if not ok:
                 self._confirm_text = f"Key validation failed: {msg}\nSave anyway?"
                 self._pending_action = lambda: self._commit_wizard_provider(
                     name, kind, base_url, model, auth, api_key, forced_msg=msg,
+                    oauth_tokens=oauth_tokens,
                 )
                 self.screen = self.CONFIRM
                 self.selected_index = 0
@@ -697,7 +739,7 @@ class ProviderPalette:
                     if normalized.is_valid:
                         model = denormalize_model_id(normalized)
 
-        self._commit_wizard_provider(name, kind, base_url, model, auth, api_key)
+        self._commit_wizard_provider(name, kind, base_url, model, auth, api_key, oauth_tokens=oauth_tokens)
 
     def _commit_wizard_provider(
         self,
@@ -708,6 +750,7 @@ class ProviderPalette:
         auth: str,
         api_key: str,
         forced_msg: str = "",
+        oauth_tokens=None,
     ) -> str:
         existing = self.db.get_provider(name)
         if existing:
@@ -724,6 +767,8 @@ class ProviderPalette:
                 ))
                 if existing.active_key_id is None:
                     existing.active_key_id = existing.keys[-1].id
+            if oauth_tokens:
+                existing.oauth_tokens = oauth_tokens
             self.db.save_provider(existing)
             self.current_provider = existing
         else:
@@ -740,6 +785,8 @@ class ProviderPalette:
                 )
                 sp.keys.append(k)
                 sp.active_key_id = k.id
+            if oauth_tokens:
+                sp.oauth_tokens = oauth_tokens
             self.db.save_provider(sp)
             self.current_provider = sp
 
@@ -749,7 +796,8 @@ class ProviderPalette:
         self.wizard_step_idx = 0
         self.input_is_password = False
         note = " (unverified)" if forced_msg else ""
-        self._close(f"Saved provider '{name}' ({kind}){note}. Active — try a prompt or /use {name}")
+        oauth_note = " [OAuth]" if auth == "oauth" else ""
+        self._close(f"Saved provider '{name}' ({kind}){oauth_note}{note}. Active — try a prompt or /use {name}")
         return f"Saved provider '{name}'"
 
     def _do_add_key(self, label: str, api_key: str) -> None:

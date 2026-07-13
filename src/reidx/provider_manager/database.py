@@ -1,17 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from reidx.diagnostics.logger import get_logger
 from reidx.provider_manager import keychain
 
 log = get_logger("reidx.provider_manager.database")
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DB_FILENAME = "providers.db"
 LEGACY_FILENAME = "providers.json"
 
@@ -27,6 +29,51 @@ class StoredKey:
 
 
 @dataclass
+class OAuthTokens:
+    access_token: str = ""
+    refresh_token: str = ""
+    id_token: str = ""
+    expires_at: float = 0
+    scope: str = ""
+    token_type: str = "Bearer"
+
+    def is_expired(self, buffer_seconds: int = 300) -> bool:
+        return self.expires_at - time.time() < buffer_seconds
+
+    def to_dict(self) -> dict:
+        return {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "id_token": self.id_token,
+            "expires_at": self.expires_at,
+            "scope": self.scope,
+            "token_type": self.token_type,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> OAuthTokens:
+        return cls(
+            access_token=data.get("access_token", ""),
+            refresh_token=data.get("refresh_token", ""),
+            id_token=data.get("id_token", ""),
+            expires_at=data.get("expires_at", 0),
+            scope=data.get("scope", ""),
+            token_type=data.get("token_type", "Bearer"),
+        )
+
+    def encrypt(self) -> str:
+        return keychain.encrypt(str(self.to_dict()))
+
+    @classmethod
+    def decrypt(cls, encrypted: str) -> OAuthTokens:
+        try:
+            data = eval(keychain.decrypt(encrypted))
+            return cls.from_dict(data)
+        except Exception:
+            return cls()
+
+
+@dataclass
 class StoredProvider:
     name: str
     kind: str
@@ -37,6 +84,7 @@ class StoredProvider:
     catalog_id: str | None = None
     keys: list[StoredKey] = field(default_factory=list)
     active_key_id: str | None = None
+    oauth_tokens: Optional[OAuthTokens] = None
 
     def active_key(self) -> StoredKey | None:
         if not self.active_key_id:
@@ -49,6 +97,14 @@ class StoredProvider:
     def decrypted_api_key(self) -> str:
         k = self.active_key()
         return k.decrypt() if k else ""
+
+    def decrypted_oauth_access_token(self) -> str:
+        if self.oauth_tokens and not self.oauth_tokens.is_expired():
+            return self.oauth_tokens.access_token
+        return ""
+
+    def has_valid_oauth(self) -> bool:
+        return self.oauth_tokens is not None and not self.oauth_tokens.is_expired()
 
 
 class ProviderDatabase:
@@ -125,6 +181,15 @@ class ProviderDatabase:
             label=k.get("label", ""),
             encrypted_key=k.get("encrypted_key", ""),
         ) for k in entry.get("keys", [])]
+        
+        oauth_tokens = None
+        oauth_data = entry.get("oauth_tokens")
+        if oauth_data:
+            try:
+                oauth_tokens = OAuthTokens.from_dict(oauth_data)
+            except Exception:
+                pass
+
         return StoredProvider(
             name=entry.get("name", ""),
             kind=entry.get("kind", "openai-compatible"),
@@ -135,10 +200,11 @@ class ProviderDatabase:
             catalog_id=entry.get("catalog_id"),
             keys=keys,
             active_key_id=entry.get("active_key_id"),
+            oauth_tokens=oauth_tokens,
         )
 
     def _to_dict(self, p: StoredProvider) -> dict:
-        return {
+        result = {
             "name": p.name,
             "kind": p.kind,
             "base_url": p.base_url,
@@ -149,6 +215,9 @@ class ProviderDatabase:
             "keys": [asdict(k) for k in p.keys],
             "active_key_id": p.active_key_id,
         }
+        if p.oauth_tokens:
+            result["oauth_tokens"] = p.oauth_tokens.to_dict()
+        return result
 
     def list_providers(self) -> list[StoredProvider]:
         data = self._read_raw()
@@ -232,3 +301,17 @@ class ProviderDatabase:
         if p is None:
             return ""
         return p.decrypted_api_key()
+
+    def save_oauth_tokens(self, provider_name: str, tokens: OAuthTokens) -> bool:
+        p = self.get_provider(provider_name)
+        if p is None:
+            return False
+        p.oauth_tokens = tokens
+        self.save_provider(p)
+        return True
+
+    def get_oauth_tokens(self, provider_name: str) -> OAuthTokens | None:
+        p = self.get_provider(provider_name)
+        if p is None or p.oauth_tokens is None:
+            return None
+        return p.oauth_tokens

@@ -1,4 +1,4 @@
-﻿"""On-disk persistence for user-added providers (`/connect`).
+"""On-disk persistence for user-added providers (`/connect`).
 
 File: `<storage_root>/providers.json`, chmod 600 on POSIX so API keys aren't
 world-readable. Format:
@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from reidx.diagnostics.logger import get_logger
 from reidx.provider.anthropic import AnthropicProvider
@@ -45,25 +46,32 @@ class ProviderRecord:
     api_key: str = ""
     default_model: str = ""
     auth_method: str = "bearer"
+    oauth_access_token: str = ""
+    oauth_refresh_token: str = ""
+    oauth_expires_at: int = 0
+    oauth_provider: str = ""
 
 
 def build_provider(record: ProviderRecord) -> BaseProvider:
     kind = record.kind
+    api_key = record.api_key
+    if record.oauth_access_token and record.oauth_provider in ("openai", "anthropic"):
+        api_key = record.oauth_access_token
     if kind == "anthropic":
         return AnthropicProvider(
-            api_key=record.api_key,
+            api_key=api_key,
             base_url=record.base_url or "https://api.anthropic.com",
             default_model=record.default_model,
         )
     if kind == "openai":
         return OpenAIProvider(
-            api_key=record.api_key,
+            api_key=api_key,
             base_url=record.base_url,
             default_model=record.default_model,
         )
     if kind == "openai-compatible":
         return OpenAICompatibleProvider(
-            api_key=record.api_key,
+            api_key=api_key,
             base_url=record.base_url,
             default_model=record.default_model,
             auth_method=record.auth_method,
@@ -72,7 +80,7 @@ def build_provider(record: ProviderRecord) -> BaseProvider:
         return OllamaProvider(
             base_url=record.base_url,
             default_model=record.default_model,
-            api_key=record.api_key,
+            api_key=api_key,
         )
     raise ValueError(f"unsupported provider kind: {kind}")
 
@@ -234,9 +242,14 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             log.debug("replaced registry entry for %s with providers.db record", sp.name)
 
         api_key = sp.decrypted_api_key()
-        if not api_key and sp.kind not in ("ollama",):
+        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, 'decrypted_oauth_access_token') else ""
+        oauth_refresh = sp.decrypted_oauth_refresh_token() if hasattr(sp, 'decrypted_oauth_refresh_token') else ""
+        oauth_expires = getattr(sp, 'oauth_expires_at', 0)
+        oauth_provider = getattr(sp, 'oauth_provider', "")
+        
+        if not api_key and not oauth_access and sp.kind not in ("ollama",):
             log.warning(
-                "provider %s in providers.db has no decryptable API key — "
+                "provider %s in providers.db has no decryptable API key or OAuth token — "
                 "re-run /connect and add a key",
                 sp.name,
             )
@@ -247,6 +260,10 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             api_key=api_key,
             default_model=sp.default_model,
             auth_method=sp.auth_method,
+            oauth_access_token=oauth_access,
+            oauth_refresh_token=oauth_refresh,
+            oauth_expires_at=oauth_expires,
+            oauth_provider=oauth_provider,
         )
         try:
             provider = build_provider(record)
@@ -270,9 +287,10 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
         registry.register(sp.name, provider, aliases=aliases)
         added.append(sp.name)
         log.info(
-            "loaded provider %s → %s (key=%s)",
+            "loaded provider %s → %s (key=%s, oauth=%s)",
             sp.name,
             (sp.base_url or "")[:48],
             "yes" if api_key else "no",
+            "yes" if oauth_access else "no",
         )
     return added
