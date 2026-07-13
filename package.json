@@ -1,6 +1,6 @@
 {
   "name": "@agxnte/reidx",
-  "version": "2.1.1",
+  "version": "2.1.3",
   "description": "Terminal-native personal intelligence and coding CLI (agent-first runtime)",
   "bin": {
     "reid": "bin/reidx.js"
