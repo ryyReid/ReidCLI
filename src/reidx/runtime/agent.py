@@ -9,6 +9,8 @@ A single turn:
 
 The loop is bounded by max_steps to avoid runaway tool cycling. Failures from tools
 become tool-result messages with error text so the model can react, never crashes.
+Provider HTTP/network failures are soft-caught the same way: one clean error line,
+session stays interactive.
 """
 from __future__ import annotations
 
@@ -19,7 +21,8 @@ from typing import Any
 
 from reidx.diagnostics.logger import get_logger
 from reidx.policy.engine import PolicyEngine
-from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall
+from reidx.provider.base import BaseProvider, Message, ProviderError, ProviderResponse, ToolCall
+from reidx.runtime.effort_auto import resolve_effort
 from reidx.runtime.reasoning import split_reasoning, system_prompt_suffix
 from reidx.runtime.state import RuntimeState
 from reidx.tools.base import Approver, ToolContext
@@ -28,6 +31,9 @@ from reidx.tools.registry import ToolRegistry
 log = get_logger("reidx.agent")
 
 MAX_STEPS = 8
+# Prefix used by orchestrator/UI to detect soft provider failures without
+# relying on exception propagation through the TUI worker thread.
+PROVIDER_ERROR_PREFIX = "[provider error] "
 
 BASE_SYSTEM_PROMPT = (
     "You are an AI coding assistant running inside ReidX, a terminal "
@@ -43,19 +49,28 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
-def _environment_context(workspace: Path) -> str:
+def _environment_context(workspace: Path, *, provider: str = "", model: str = "") -> str:
     """Environment header appended to the system prompt each turn.
 
-    Tells the model exactly which OS and workspace it's operating in so it
-    doesn't guess (e.g. inventing `/mnt/e/...` on Windows). Regenerated per
-    turn because the workspace can change mid-session via /use.
+    Tells the model exactly which OS, workspace, and *model identity* it is
+    running as so it does not invent "I'm Claude" when the session is on
+    z-ai/glm-5.2 (etc.). Regenerated per turn because /use and /model change.
     """
     system = platform.system() or "Unknown"
+    identity = ""
+    if model or provider:
+        identity = (
+            f"\n  provider: {provider or 'unknown'}"
+            f"\n  model: {model or 'unknown'}"
+            "\n  identity_note: You are the model named above. Do not claim to be "
+            "Claude, GPT, Gemini, or any other product unless that is your model id."
+        )
     return (
         "\n\n<environment>"
         f"\n  os: {system} ({platform.release()})"
         f"\n  workspace: {workspace}"
         f"\n  path_style: {'windows (backslash, drive letters)' if system == 'Windows' else 'posix (forward slash)'}"
+        f"{identity}"
         "\n  note: the workspace path is the canonical form the tools accept. "
         "Absolute paths (including drive letters on Windows) are valid. "
         "Path checks outside the workspace prompt the user with a yes/no — "
@@ -95,19 +110,35 @@ class Agent:
             extra=dict(self.context_extras),
         )
 
-    def _ensure_system(self, state: RuntimeState) -> None:
+    def _ensure_system(self, state: RuntimeState, user_input: str = "") -> None:
         # Rebuilt every turn (not just inserted once) so changing /effort or
         # the Left/Right effort cycle mid-session takes effect on the very
         # next turn instead of being frozen at whatever it was on turn one.
+        # `/effort auto` resolves low|medium|high from the user prompt here.
+        effective = resolve_effort(state.session.reasoning_effort, user_input)
+        state.last_effort_resolved = effective
         prompt = (
             self.base_system_prompt
-            + _environment_context(state.session.workspace)
-            + system_prompt_suffix(state.session.reasoning_effort)
+            + _environment_context(
+                state.session.workspace,
+                provider=state.session.provider,
+                model=state.session.model or getattr(self.provider, "default_model", "") or "",
+            )
+            + system_prompt_suffix(effective)
         )
         if not state.messages or state.messages[0].role != "system":
             state.messages.insert(0, Message(role="system", content=prompt))
         else:
             state.messages[0].content = prompt
+
+    def _should_stream(self, state: RuntimeState) -> bool:
+        mode = (getattr(state.session, "stream", None) or "auto").strip().lower()
+        if mode in ("off", "false", "0", "no"):
+            return False
+        if mode in ("on", "true", "1", "yes"):
+            return True
+        # auto: stream when the active provider implements it
+        return bool(getattr(self.provider, "supports_streaming", False))
 
     def run_turn(
         self,
@@ -118,6 +149,7 @@ class Agent:
         approver: Approver | None = None,
         max_steps: int = MAX_STEPS,
         cancel: Callable[[], bool] | None = None,
+        on_text_delta: Callable[[str], None] | None = None,
     ) -> tuple[str, list[dict]]:
         """Execute one user turn. Returns (final_text, tool_result_log).
 
@@ -129,21 +161,46 @@ class Agent:
         user-triggered stop (e.g. Escape in the TUI) takes effect at the next
         such point rather than needing to kill an in-flight network call —
         it can't interrupt a `provider.chat`/tool call already in progress.
+
+        `on_text_delta`, if given and session streaming is enabled, receives
+        each streamed content chunk so the TUI can paint tokens live.
         """
-        self._ensure_system(state)
+        self._ensure_system(state, user_input)
         state.messages.append(Message(role="user", content=user_input))
         ctx = self._context(state, writable_roots or [], approver)
         tool_log: list[dict] = []
         final_text = ""
         state.last_thinking = None  # fresh per turn; the UI reads it after run_turn
+        use_stream = self._should_stream(state)
 
         for _step in range(max_steps):
             if cancel is not None and cancel():
                 final_text = final_text or "[cancelled by user]"
                 break
-            resp: ProviderResponse = self.provider.chat(
-                state.messages, self.tools.schemas(), state.session.model
-            )
+            try:
+                if use_stream and getattr(self.provider, "supports_streaming", False):
+                    resp = self.provider.chat_stream(
+                        state.messages,
+                        self.tools.schemas(),
+                        state.session.model,
+                        on_text_delta=on_text_delta,
+                    )
+                else:
+                    resp = self.provider.chat(
+                        state.messages, self.tools.schemas(), state.session.model
+                    )
+            except ProviderError as exc:
+                # Soft crash: one clean Error line in the TUI. Do not log to the
+                # console StreamHandler — stderr bleeds into the full-screen UI.
+                log.debug("provider call failed: %s", exc)
+                final_text = f"{PROVIDER_ERROR_PREFIX}{exc}"
+                state.messages.append(Message(role="assistant", content=final_text))
+                break
+            except Exception as exc:  # noqa: BLE001 - keep the session alive on any provider bug
+                log.debug("provider call crashed: %s: %s", type(exc).__name__, exc)
+                final_text = f"{PROVIDER_ERROR_PREFIX}{type(exc).__name__}: {exc}"
+                state.messages.append(Message(role="assistant", content=final_text))
+                break
             # Latest call's usage, not summed — see RuntimeState's field docstring.
             state.last_usage_prompt_tokens = resp.usage.prompt_tokens
             state.last_usage_completion_tokens = resp.usage.completion_tokens
@@ -195,4 +252,4 @@ def build_agent(provider: BaseProvider, tools: ToolRegistry, policy: PolicyEngin
 
 
 # Silence unused import warnings for re-exports.
-__all__ = ["Agent", "build_agent", "ToolCall", "Any"]
+__all__ = ["Agent", "build_agent", "PROVIDER_ERROR_PREFIX", "ToolCall", "Any"]

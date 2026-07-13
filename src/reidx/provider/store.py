@@ -149,7 +149,9 @@ def validate_provider(
         return True, "verification skipped"
     try:
         models = provider.fetch_models()
-    except RuntimeError as exc:
+    except Exception as exc:
+        # ProviderError (HTTP/network) and any other failure — never crash
+        # the /connect palette or slash handler on a bad key/URL.
         msg = str(exc)
         if msg.startswith("HTTP 401") or msg.startswith("HTTP 403"):
             return False, f"authentication failed ({msg})"
@@ -157,9 +159,9 @@ def validate_provider(
             return False, f"endpoint not found - check base URL ({msg})"
         if msg.startswith("HTTP "):
             return False, f"provider error: {msg}"
+        if "connection error" in msg.lower():
+            return False, f"{msg} (use --skip-verify to save anyway)"
         return False, f"{msg} (use --skip-verify to save anyway)"
-    except Exception as exc:
-        return False, f"unexpected error: {exc} (use --skip-verify to save anyway)"
     
     if models and record.default_model:
         normalized = normalize_model_id(record.default_model, provider_name=record.name)
@@ -187,16 +189,57 @@ def load_into(registry: ProviderRegistry, storage_root: Path) -> list[str]:
     return added
 
 
+def _aliases_for_stored(name: str, catalog_id: str | None) -> list[str]:
+    """Catalog id + aliases so `/use nvidia` hits a provider saved as 'NVIDIA NIM'."""
+    aliases: list[str] = []
+    try:
+        from reidx.provider_manager.catalog import all_providers, by_id
+    except Exception:  # noqa: BLE001
+        return aliases
+    pdef = by_id(catalog_id) if catalog_id else None
+    if pdef is None:
+        # Match by display name
+        for p in all_providers():
+            if p.name.lower() == name.lower() or _slug(p.name) == _slug(name):
+                pdef = p
+                break
+    if pdef is None:
+        return aliases
+    aliases.append(pdef.id)
+    aliases.extend(pdef.aliases)
+    # Handy short forms: "NVIDIA NIM" → also accept "nvidia nim"
+    aliases.append(pdef.name.lower())
+    return list(dict.fromkeys(a for a in aliases if a and a != name))
+
+
+def _slug(s: str) -> str:
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
 def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[str]:
-    from reidx.provider.models import denormalize_model_id, normalize_model_id
+    """Load /connect providers from providers.db.
+
+    Database records always win over incomplete settings.json stubs (same name).
+    Does not call remote /models on startup (that blocked the TUI).
+    """
     from reidx.provider_manager.database import ProviderDatabase
 
     added: list[str] = []
     db = ProviderDatabase(storage_root)
     for sp in db.list_providers():
-        if registry.has(sp.name):
-            continue
+        # Prefer the saved connection (real base_url + key) over anything
+        # already registered from a partial settings entry.
+        if sp.name in registry.names():
+            registry.unregister(sp.name)
+            log.debug("replaced registry entry for %s with providers.db record", sp.name)
+
         api_key = sp.decrypted_api_key()
+        if not api_key and sp.kind not in ("ollama",):
+            log.warning(
+                "provider %s in providers.db has no decryptable API key — "
+                "re-run /connect and add a key",
+                sp.name,
+            )
         record = ProviderRecord(
             name=sp.name,
             kind=sp.kind,
@@ -210,28 +253,26 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
         except (ValueError, TypeError):
             log.warning("skipping provider %s (kind=%s): failed to build", sp.name, sp.kind)
             continue
-        if not record.default_model:
-            try:
-                models = provider.fetch_models()
-            except Exception:
-                models = []
-            if models:
-                normalized = normalize_model_id(models[0], provider_name=sp.name)
-                if normalized.is_valid:
-                    model = denormalize_model_id(normalized)
-                    provider.default_model = model
-                    sp.default_model = model
-                    db.save_provider(sp)
-                    log.info("auto-fetched model for %s: %s", sp.name, model)
-        elif record.default_model:
-            # Normalize the existing model
-            normalized = normalize_model_id(record.default_model, provider_name=sp.name)
-            if normalized.is_valid:
-                model = denormalize_model_id(normalized)
-                record.default_model = model
-                provider.default_model = model
-                sp.default_model = model
-                db.save_provider(sp)
-        registry.register(sp.name, provider)
+        # Optional model preference from settings.json (name-only entry).
+        try:
+            from reidx.config.settings import read_reidx_block
+
+            prefs = (read_reidx_block().get("providers") or {}).get(sp.name) or {}
+            pref_model = prefs.get("default_model") if isinstance(prefs, dict) else ""
+            if pref_model and not record.default_model:
+                provider.default_model = str(pref_model)
+            elif pref_model:
+                # User's last /model choice wins over the original connect default.
+                provider.default_model = str(pref_model)
+        except Exception:  # noqa: BLE001
+            pass
+        aliases = _aliases_for_stored(sp.name, getattr(sp, "catalog_id", None))
+        registry.register(sp.name, provider, aliases=aliases)
         added.append(sp.name)
+        log.info(
+            "loaded provider %s → %s (key=%s)",
+            sp.name,
+            (sp.base_url or "")[:48],
+            "yes" if api_key else "no",
+        )
     return added

@@ -13,7 +13,8 @@
     "scripts",
     "src",
     "pyproject.toml",
-    "README.md"
+    "README.md",
+    "settings.example.json"
   ],
   "engines": {
     "node": ">=16"

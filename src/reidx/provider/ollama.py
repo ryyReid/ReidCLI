@@ -8,11 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from reidx.diagnostics.logger import get_logger
 from reidx.provider._http import get_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
-
-log = get_logger("reidx.provider.ollama")
+from reidx.provider.context_windows import remember_context
 
 
 class OllamaProvider(BaseProvider):
@@ -75,11 +73,9 @@ class OllamaProvider(BaseProvider):
         ol_tools = self._to_ollama_tools(tools)
         if ol_tools:
             payload["tools"] = ol_tools
-        try:
-            body = post_json(f"{self.base_url}/api/chat", payload, {})
-        except RuntimeError:
-            log.exception("Ollama request failed")
-            raise
+        # ProviderError soft-caught by Agent.run_turn — no console logging
+        # (stderr corrupts the full-screen TUI).
+        body = post_json(f"{self.base_url}/api/chat", payload, {})
 
         msg = body.get("message", {}) or {}
         text = msg.get("content") or ""
@@ -111,8 +107,23 @@ class OllamaProvider(BaseProvider):
     def fetch_models(self) -> list[str]:
         body = get_json(f"{self.base_url}/api/tags", {})
         models: list[str] = []
-        for item in body.get("models", []):
-            name = item.get("name", "")
+        for item in body.get("models", []) or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name", "") or item.get("model", "")
             if name:
                 models.append(name)
+                # Ollama tags rarely include n_ctx; details.parameter_size is
+                # not context. Prefer known table via remember only if present.
+                details = item.get("details") if isinstance(item.get("details"), dict) else {}
+                for key in ("context_length", "n_ctx", "max_model_len"):
+                    if key in item or key in details:
+                        raw = item.get(key, details.get(key))
+                        try:
+                            n = int(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        if n > 0:
+                            remember_context(str(name), n)
+                            break
         return sorted(models)

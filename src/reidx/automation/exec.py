@@ -29,6 +29,9 @@ def _auto_approve(prompt: str) -> bool:
 def exec_run(orchestrator: Orchestrator, prompt: str, approver: Approver | None = None) -> int:
     orchestrator.start_session(title=f"exec: {prompt[:40]}")
     result = orchestrator.submit_task(prompt, approver=approver or _auto_approve)
+    if result.get("error"):
+        print(f"Error: {result['text']}", file=sys.stderr)
+        return 1
     print(result["text"])
     if result["tools"]:
         print(f"\n[{len(result['tools'])} tool call(s)]", file=sys.stderr)

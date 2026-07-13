@@ -34,6 +34,12 @@ class Session(BaseModel):
     provider: str = "stub"
     model: str = "stub-v0"
     reasoning_effort: str = "medium"
+    # Context window for the active model, filled from the provider /models API
+    # (0 = unknown → status bar falls back to a generic default).
+    context_window: int = 0
+    # Token streaming into the TUI: auto (on when provider supports) | on | off.
+    # Default auto so OpenAI-compatible backends stream without a flag.
+    stream: str = "auto"
     permission_mode: PermissionMode = PermissionMode.BALANCED
     status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

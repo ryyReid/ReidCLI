@@ -58,6 +58,148 @@ def test_load_into_registers_provider(tmp_path: Path) -> None:
     assert reg.has("local")
 
 
+def test_database_provider_overrides_incomplete_settings(tmp_path: Path) -> None:
+    """settings.json name-only entries must not block providers.db (WinError 10061 bug)."""
+    from reidx.config.models import Config, ProviderConfig, default_config
+    from reidx.provider.registry import default_registry
+    from reidx.provider.store import load_from_database
+    from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
+    from reidx.provider_manager import keychain
+
+    # Incomplete settings-style config (no base_url) — previously became localhost:8080
+    cfg = default_config()
+    cfg.providers["NVIDIA NIM"] = ProviderConfig(name="NVIDIA NIM", default_model="z-ai/glm-5.2")
+    reg = default_registry(cfg)
+    assert "NVIDIA NIM" not in reg.names()  # must not register incomplete
+
+    db = ProviderDatabase(tmp_path)
+    db.save_provider(
+        StoredProvider(
+            name="NVIDIA NIM",
+            kind="openai-compatible",
+            base_url="https://integrate.api.nvidia.com/v1",
+            default_model="meta/llama-3.1-70b-instruct",
+            auth_method="bearer",
+            catalog_id="nvidia-nim",
+            keys=[
+                StoredKey(
+                    id="k1",
+                    label="nvidia",
+                    encrypted_key=keychain.encrypt("nvapi-test-key"),
+                )
+            ],
+            active_key_id="k1",
+        )
+    )
+    # Simulate a bad pre-registration (old bug)
+    from reidx.provider.openai import OpenAICompatibleProvider
+
+    reg.register(
+        "NVIDIA NIM",
+        OpenAICompatibleProvider(api_key="", base_url="http://localhost:8080", default_model="x"),
+    )
+    added = load_from_database(reg, tmp_path)
+    assert "NVIDIA NIM" in added
+    p = reg.get("NVIDIA NIM")
+    assert "integrate.api.nvidia.com" in p.base_url
+    assert p.api_key == "nvapi-test-key"
+    assert "localhost" not in p.base_url
+
+
+def test_pick_startup_provider_prefers_real_over_stub() -> None:
+    from reidx.provider.openai import OpenAICompatibleProvider
+    from reidx.provider.registry import pick_startup_provider
+
+    reg = ProviderRegistry()
+    reg.register("stub", StubProvider())
+    reg.register(
+        "NVIDIA NIM",
+        OpenAICompatibleProvider(api_key="k", base_url="https://example.com/v1", default_model="m"),
+        aliases=["nvidia"],
+    )
+    assert pick_startup_provider(reg, "stub") == "NVIDIA NIM"
+    assert pick_startup_provider(reg, "nvidia") == "NVIDIA NIM"
+    assert pick_startup_provider(reg, "") == "NVIDIA NIM"
+
+
+def test_pick_startup_provider_stub_only() -> None:
+    from reidx.provider.registry import pick_startup_provider
+
+    reg = ProviderRegistry()
+    reg.register("stub", StubProvider())
+    assert pick_startup_provider(reg, "stub") == "stub"
+
+
+def test_resolve_nvidia_alias_to_display_name() -> None:
+    """Catalog alias `nvidia` must resolve to a provider saved as 'NVIDIA NIM'."""
+    from reidx.provider.openai import OpenAICompatibleProvider
+
+    reg = ProviderRegistry()
+    reg.register("stub", StubProvider())
+    nim = OpenAICompatibleProvider(
+        api_key="k",
+        base_url="https://integrate.api.nvidia.com/v1",
+        default_model="meta/llama-3.1-70b-instruct",
+    )
+    reg.register(
+        "NVIDIA NIM",
+        nim,
+        aliases=["nvidia-nim", "nvidia", "nvidia nim"],
+    )
+    assert reg.resolve("nvidia") == "NVIDIA NIM"
+    assert reg.resolve("NVIDIA NIM") == "NVIDIA NIM"
+    assert reg.resolve("nvidia-nim") == "NVIDIA NIM"
+    assert reg.has("nvidia")
+    assert reg.get("nvidia") is nim
+
+
+def test_normalize_openai_base_url_no_double_v1() -> None:
+    from reidx.provider.openai import OpenAICompatibleProvider, OpenAIProvider, normalize_openai_base_url
+
+    assert normalize_openai_base_url("https://api.openai.com") == "https://api.openai.com/v1"
+    assert normalize_openai_base_url("https://api.x.ai/v1") == "https://api.x.ai/v1"
+    assert normalize_openai_base_url("https://api.groq.com/openai/v1") == "https://api.groq.com/openai/v1"
+    assert normalize_openai_base_url("https://openrouter.ai/api") == "https://openrouter.ai/api/v1"
+    assert (
+        normalize_openai_base_url("https://generativelanguage.googleapis.com/v1beta/openai")
+        == "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+    # Provider instances must request /chat/completions (not /v1/v1/...)
+    p = OpenAIProvider(api_key="k", base_url="https://api.x.ai/v1")
+    assert p.base_url == "https://api.x.ai/v1"
+    compat = OpenAICompatibleProvider(api_key="k", base_url="http://localhost:1234/v1")
+    assert compat.base_url == "http://localhost:1234/v1"
+    bare = OpenAICompatibleProvider(api_key="k", base_url="http://localhost:8080")
+    assert bare.base_url == "http://localhost:8080/v1"
+
+
+def test_catalog_connect_saves_provider_before_key(tmp_path: Path) -> None:
+    """First-time catalog connect must persist the provider shell before add_key."""
+    from reidx.provider_manager.database import ProviderDatabase, StoredProvider
+    from reidx.provider_manager.palette import ProviderPalette
+
+    db = ProviderDatabase(tmp_path)
+    orch = _FakeOrchestrator(tmp_path)
+    closed: list[str] = []
+    palette = ProviderPalette(db=db, orchestrator=orch, on_close=lambda m: closed.append(m))
+    palette.current_provider = StoredProvider(
+        name="OpenAI",
+        kind="openai",
+        base_url="https://api.openai.com",
+        default_model="gpt-4o-mini",
+        auth_method="bearer",
+    )
+    # No prior save — mirrors catalog first-select path.
+    assert db.get_provider("OpenAI") is None
+    msg = palette._commit_key("Personal", "sk-test-key", "ok")
+    assert "Added key" in msg
+    saved = db.get_provider("OpenAI")
+    assert saved is not None
+    assert len(saved.keys) == 1
+    assert saved.keys[0].label == "Personal"
+    assert orch.providers.has("OpenAI")
+
+
 # --- subagent manager ----------------------------------------------------
 
 

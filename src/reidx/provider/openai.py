@@ -7,24 +7,50 @@ local-endpoint variant that skips the auth header when no key is set.
 
 Tool schemas ReidX produces (`ToolBase.schema()`) are already OpenAI-style,
 so tool passing is a straight forward.
+
+`base_url` may be either a bare origin (`https://api.openai.com`) or an
+already-versioned API root (`https://api.x.ai/v1`,
+`https://api.groq.com/openai/v1`). Normalization appends `/v1` only when
+needed so catalog entries never hit `/v1/v1/chat/completions`.
 """
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
-from reidx.diagnostics.logger import get_logger
-from reidx.provider._http import get_json, post_json
+from reidx.provider._http import MODELS_TIMEOUT_SECONDS, get_json, iter_sse_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
+from reidx.provider.context_windows import ingest_models_payload
 
-log = get_logger("reidx.provider.openai")
+# Matches an API root that already includes a version segment, so we must
+# not append another `/v1`. Covers:
+#   .../v1, .../v4, .../v1beta/openai, .../openai/v1
+_VERSIONED_API_ROOT = re.compile(
+    r"/(?:v\d+[a-z]*(?:/openai)?|openai/v\d+)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_openai_base_url(base_url: str, default: str = "https://api.openai.com") -> str:
+    """Return the API root used for `/chat/completions` and `/models`.
+
+    Bare origins get `/v1` appended. Already-versioned roots are left alone.
+    """
+    base = (base_url or default or "").rstrip("/")
+    if not base:
+        base = default.rstrip("/")
+    if _VERSIONED_API_ROOT.search(base):
+        return base
+    return f"{base}/v1"
 
 
 class OpenAIProvider(BaseProvider):
     name = "openai"
     DEFAULT_BASE_URL = "https://api.openai.com"
     DEFAULT_MODEL = "gpt-4o-mini"
-    MODELS_PATH = "/v1/models"
+    MODELS_PATH = "/models"
+    supports_streaming = True
 
     def __init__(
         self,
@@ -33,7 +59,7 @@ class OpenAIProvider(BaseProvider):
         default_model: str = "",
     ) -> None:
         self.api_key = api_key
-        self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        self.base_url = normalize_openai_base_url(base_url, self.DEFAULT_BASE_URL)
         self.default_model = default_model or self.DEFAULT_MODEL
 
     @classmethod
@@ -118,19 +144,138 @@ class OpenAIProvider(BaseProvider):
         }
         if tools:
             payload["tools"] = tools
-        url = f"{self.base_url}/v1/chat/completions"
-        try:
-            body = post_json(url, payload, self._headers())
-        except RuntimeError:
-            log.exception("OpenAI-compatible request failed")
-            raise
+        url = f"{self.base_url}/chat/completions"
+        # ProviderError soft-caught by Agent.run_turn — no console logging
+        # (stderr corrupts the full-screen TUI).
+        body = post_json(url, payload, self._headers())
         return self._parse(body, model)
 
-    def fetch_models(self) -> list[str]:
+    def chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        *,
+        on_text_delta: Any | None = None,
+    ) -> ProviderResponse:
+        """OpenAI-compatible SSE stream (`stream: true`).
+
+        Accumulates content + tool_call argument fragments, invoking
+        `on_text_delta` for each content piece so the TUI can paint live.
+        """
+        model = model or self.default_model
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": self._to_openai_messages(messages),
+            "stream": True,
+            # Some hosts (OpenAI) put usage on the final chunk when requested.
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = tools
+        url = f"{self.base_url}/chat/completions"
+
+        text_parts: list[str] = []
+        # index -> {id, name, arguments}
+        tc_acc: dict[int, dict[str, str]] = {}
+        finish = "stop"
+        usage = Usage()
+
+        def _consume(events) -> None:  # type: ignore[no-untyped-def]
+            nonlocal finish, usage
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                usage_raw = event.get("usage")
+                if isinstance(usage_raw, dict):
+                    usage = Usage(
+                        prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
+                        completion_tokens=int(usage_raw.get("completion_tokens") or 0),
+                    )
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0] or {}
+                fr = choice.get("finish_reason")
+                if fr:
+                    finish = fr
+                delta = choice.get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    text_parts.append(piece)
+                    if on_text_delta is not None:
+                        try:
+                            on_text_delta(piece)
+                        except Exception:  # noqa: BLE001 - UI callback must not kill stream
+                            pass
+                for tc in delta.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    idx = int(tc.get("index") or 0)
+                    slot = tc_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tc.get("id"):
+                        slot["id"] = str(tc["id"])
+                    fn = tc.get("function") or {}
+                    if isinstance(fn, dict):
+                        if fn.get("name"):
+                            slot["name"] = str(fn["name"])
+                        if fn.get("arguments"):
+                            slot["arguments"] += str(fn["arguments"])
+
+        from reidx.provider.base import ProviderError
+
+        try:
+            _consume(iter_sse_json(url, payload, self._headers()))
+        except ProviderError:
+            # Some proxies reject stream_options — retry once without it.
+            if "stream_options" in payload and not text_parts and not tc_acc:
+                payload.pop("stream_options", None)
+                _consume(iter_sse_json(url, payload, self._headers()))
+            elif not text_parts and not tc_acc:
+                raise
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc):
+            slot = tc_acc[idx]
+            args_raw = slot.get("arguments") or "{}"
+            try:
+                import json as _json
+
+                args = _json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+            except ValueError:
+                args = {"_raw": args_raw}
+            tool_calls.append(
+                ToolCall(
+                    id=slot.get("id") or f"call-{idx}",
+                    name=slot.get("name") or "",
+                    arguments=args if isinstance(args, dict) else {"_raw": args},
+                )
+            )
+
+        return ProviderResponse(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            usage=usage,
+            stop_reason=finish or "stop",
+        )
+
+    def fetch_models_detailed(self, *, timeout: int = MODELS_TIMEOUT_SECONDS) -> list[dict]:
+        """Raw /models entries (used to cache context windows).
+
+        Uses a short timeout so `/model list` cannot freeze the TUI on slow hosts
+        (e.g. NVIDIA NIM catalogs).
+        """
         url = f"{self.base_url}{self.MODELS_PATH}"
-        body = get_json(url, self._headers())
+        body = get_json(url, self._headers(), timeout=timeout)
+        data = body.get("data", [])
+        if not isinstance(data, list):
+            return []
+        ingest_models_payload(data)
+        return [item for item in data if isinstance(item, dict)]
+
+    def fetch_models(self, *, timeout: int = MODELS_TIMEOUT_SECONDS) -> list[str]:
         models: list[str] = []
-        for item in body.get("data", []):
+        for item in self.fetch_models_detailed(timeout=timeout):
             mid = item.get("id", "")
             if mid:
                 models.append(mid)
@@ -149,7 +294,7 @@ class OpenAICompatibleProvider(OpenAIProvider):
     name = "openai-compatible"
     DEFAULT_BASE_URL = "http://localhost:8080"
     DEFAULT_MODEL = "local"
-    MODELS_PATH = "/v1/models"
+    MODELS_PATH = "/models"
 
     def __init__(
         self,

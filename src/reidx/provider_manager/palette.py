@@ -395,39 +395,6 @@ class ProviderPalette:
                 items.append(PaletteItem(label=k.label, icon=icon, kind="action", data=k))
         return items
 
-    def _models_items(self) -> list[PaletteItem]:
-        items: list[PaletteItem] = []
-        if not self.current_provider:
-            return items
-        
-        sp = self.current_provider
-        try:
-            provider = build_provider(ProviderRecord(
-                name=sp.name, kind=sp.kind, base_url=sp.base_url,
-                api_key=sp.decrypted_api_key(), default_model=sp.default_model,
-                auth_method=sp.auth_method,
-            ))
-            models = provider.fetch_models()
-        except Exception as exc:
-            log.warning("failed to fetch models for %s: %s", sp.name, exc)
-            items.append(PaletteItem("Error loading models", str(exc), icon="!", kind="action"))
-            return items
-        
-        if not models:
-            items.append(PaletteItem("No models available", "Provider returned empty model list", icon="!", kind="action"))
-            return items
-        
-        current_model = sp.default_model or ""
-        for model in models:
-            is_current = model == current_model
-            icon = "?" if is_current else "	"
-            desc = "current" if is_current else ""
-            items.append(PaletteItem(
-                label=model, description=desc, icon=icon, kind="model", data=model
-            ))
-        
-        return items
-
     def _handle_list_enter(self, item: PaletteItem) -> None:
         if self.screen == self.LIST:
             self._on_list_select(item)
@@ -614,13 +581,6 @@ class ProviderPalette:
         self.wizard_data[step.field] = item.label
         self._wizard_advance()
 
-    def _on_models_select(self, item: PaletteItem) -> None:
-        if item.kind == "model" and item.data:
-            self.current_provider.default_model = item.data
-            self.db.save_provider(self.current_provider)
-            self._register_current()
-            self._show_message(f"Set default model to '{item.data}'", self.MANAGE)
-
     def _handle_input_enter(self) -> None:
         text = self.input_buf.text
         if self.screen == self.KEY_LABEL:
@@ -784,11 +744,12 @@ class ProviderPalette:
             self.current_provider = sp
 
         self._register_current()
+        self._try_use_provider(name)
         self.wizard_data = {}
         self.wizard_step_idx = 0
         self.input_is_password = False
         note = " (unverified)" if forced_msg else ""
-        self._close(f"Saved provider '{name}' ({kind}){note}")
+        self._close(f"Saved provider '{name}' ({kind}){note}. Active — try a prompt or /use {name}")
         return f"Saved provider '{name}'"
 
     def _do_add_key(self, label: str, api_key: str) -> None:
@@ -815,12 +776,36 @@ class ProviderPalette:
     def _commit_key(self, label: str, api_key: str, msg: str) -> str:
         if not self.current_provider:
             return "Error: no provider"
-        name = self.current_provider.name
-        self.db.add_key(name, label, api_key)
+        sp = self.current_provider
+        name = sp.name
+        # Catalog first-connect path builds a StoredProvider in memory and
+        # only saves it when a key is added. Persist the shell row first —
+        # otherwise db.add_key() finds nothing and silently drops the key.
+        if self.db.get_provider(name) is None:
+            self.db.save_provider(sp)
+        key = self.db.add_key(name, label, api_key)
+        if key is None:
+            return f"Error: failed to save key for '{name}'"
         self.current_provider = self.db.get_provider(name)
         self._register_current()
-        self._show_message(f"Added key '{label}' ({msg})", self.MANAGE)
+        # Switch the session onto the provider that was just wired up so
+        # the next chat turn actually uses it (otherwise stub stays active).
+        self._try_use_provider(name)
+        self._show_message(
+            f"Added key '{label}' ({msg}). Active provider: {name} — try a prompt, or /use {name}",
+            self.MANAGE,
+        )
         return f"Added key '{label}'"
+
+    def _try_use_provider(self, name: str) -> None:
+        """Best-effort session switch after a successful connect."""
+        orch = self.orchestrator
+        if orch is None or orch.providers is None or not orch.providers.has(name):
+            return
+        try:
+            orch.use_provider(name)
+        except Exception:  # noqa: BLE001 - palette must not crash on swap
+            log.debug("could not auto-switch session to provider %s", name, exc_info=True)
 
     def _do_delete_key(self, key_id: str, label: str) -> str:
         if not self.current_provider:
@@ -864,7 +849,17 @@ class ProviderPalette:
                         provider.default_model = denormalize_model_id(normalized)
                         sp.default_model = denormalize_model_id(normalized)
                         self.db.save_provider(sp)
-            self.orchestrator.providers.register(sp.name, provider)
+            aliases: list[str] = []
+            if sp.catalog_id:
+                try:
+                    from reidx.provider_manager.catalog import by_id
+
+                    pdef = by_id(sp.catalog_id)
+                    if pdef:
+                        aliases = [pdef.id, *pdef.aliases, pdef.name.lower()]
+                except Exception:  # noqa: BLE001
+                    pass
+            self.orchestrator.providers.register(sp.name, provider, aliases=aliases)
         except (ValueError, TypeError):
             log.exception("failed to register provider %s", sp.name)
 

@@ -37,8 +37,23 @@ class ProviderResponse(BaseModel):
     stop_reason: str = "stop"
 
 
+class ProviderError(RuntimeError):
+    """Raised when a model provider request fails.
+
+    Soft-caught by the agent loop so a bad key, 404 model, or network blip
+    becomes an inline error message instead of crashing the TUI session.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class BaseProvider(ABC):
     name: str = "base"
+
+    # When True, Agent may call chat_stream() for token-by-token TUI updates.
+    supports_streaming: bool = False
 
     @abstractmethod
     def chat(
@@ -48,6 +63,25 @@ class BaseProvider(ABC):
         model: str | None = None,
     ) -> ProviderResponse:
         """Run one model turn. Returns text and/or tool calls."""
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        *,
+        on_text_delta: Any | None = None,
+    ) -> ProviderResponse:
+        """Stream a model turn; call `on_text_delta(str)` for each content chunk.
+
+        Default implementation falls back to non-streaming `chat()` and emits
+        the full text once. Providers that set `supports_streaming = True`
+        should override with real SSE streaming.
+        """
+        resp = self.chat(messages, tools, model)
+        if on_text_delta is not None and resp.text:
+            on_text_delta(resp.text)
+        return resp
 
     def fetch_models(self) -> list[str]:
         return []

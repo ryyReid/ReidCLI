@@ -5,15 +5,17 @@ Terminal-native personal intelligence and coding CLI with an agent-first runtime
 A real runtime — not a chat wrapper. Sessions, tasks, tools, policy gates,
 providers, and persistence are first-class. A genuine full-screen TUI (not an
 inline redraw hack) with a locked-to-bottom footer, scrollable history,
-collapsible reasoning/tool-call output, a live subagent panel, and a live "/"
-command menu. Built to grow into a durable operator surface.
+collapsible reasoning/tool-call output, token streaming, drag-to-copy, a live
+subagent panel, and a live `/` command menu. Built to grow into a durable
+operator surface.
 
 **Status:** Phase 5 complete (correctness fixes + real resume + interaction
 upgrade), plus a full-screen TUI rewrite, real HTTP providers (Anthropic /
-OpenAI / OpenAI-compatible / Ollama), subagent spawning, DeepReid
-(Researcher?Planner?Critic planning pipeline), Nyx (redteam persona mode),
-web search, and workflows on top. See `docs/` for the architecture audit and
-phase plans.
+OpenAI / OpenAI-compatible / Ollama), SSE token streaming, context compact +
+cost tracking, soft provider-error handling, subagent spawning, DeepReid
+(Researcher→Planner→Critic planning pipeline), Nyx (redteam persona mode),
+web search, and workflows. See `docs/` for the architecture audit and phase
+plans.
 
 ---
 
@@ -24,9 +26,9 @@ phase plans.
 - **Pydantic v2** — schemas and validation
 - **Rich** — terminal rendering (markdown, tables, panels)
 - **prompt_toolkit** — the full-screen TUI (layout, input, completion, mouse)
-- No HTTP client dependency — the Anthropic/OpenAI/Ollama providers and
-  `web_search` all speak stdlib `urllib`, so there's nothing extra to install
-  to go from the offline stub to a real model.
+- No HTTP client dependency — providers and `web_search` use stdlib `urllib`
+  (including SSE streaming), so nothing extra is required to go from the
+  offline stub to a real model.
 
 ---
 
@@ -35,7 +37,8 @@ phase plans.
 ### Option A: install via npm
 
 Requires Python 3.12+ on your `PATH` (the npm package is a thin wrapper that
-pip-installs the Python package on `npm install`).
+pip-installs the Python package on `npm install` and seeds
+`~/.reidcli/settings.json`).
 
 ```powershell
 npm install -g reidx
@@ -62,18 +65,20 @@ pip install -e ".[dev]"
 reid doctor
 ```
 
-Expected output:
+Expected shape:
 
 ```
-reid 2.1.1
+reid 2.x.x
 settings  <path> (found|missing)
-python    <path> (3.13.x)
+user cfg  ~/.reidcli/settings.json   # when project settings differ
+python    <path> (3.12+)
 workspace <cwd>
-storage   ~/.reidx
-provider  stub
+storage   ~/.reidcli
+provider  stub | <connected>
 mode      balanced
-providers stub (active), N tools
-anthropic not configured (env: ANTHROPIC_API_KEY)
+providers …
+anthropic configured|not configured
+openai    configured|not configured
 ok runtime importable; provider available
 ```
 
@@ -84,73 +89,60 @@ reid
 ```
 
 Drops you into the interactive TUI with a fresh session. Type `/` to see every
-available command with descriptions, or just start talking. The stub provider
-is offline and exercisable without API keys.
+available command with descriptions, or just start talking.
+
+- **Offline:** the stub provider works without API keys and points you at
+  `/connect`.
+- **Real chat:** `/connect` (or env keys) + `/use <provider>`, or let startup
+  pick a connected provider over stub when one exists.
 
 ---
 
 ## The interactive TUI
 
 `reid` (with no subcommand, or `reid interactive`) launches a real
-full-screen `prompt_toolkit` application — the same style of terminal
-ownership as `vim`/`htop` (alternate screen; your native scrollback is
-untouched and restored exactly as it was on exit). Rich handles all the
-actual rendering (markdown, tables, panels); prompt_toolkit owns the screen,
-input, and layout around it.
+full-screen `prompt_toolkit` application — alternate screen; native scrollback
+is restored on exit. Rich handles markdown/tables/panels; prompt_toolkit owns
+layout, input, and mouse.
 
-- **Locked-to-bottom footer** — a spinner row, the input box, an optional
-  subagent panel, and a status line (app name · mode · model · effort ·
-  token/context-window usage · workspace · task count) are always pinned to
-  the terminal's actual last rows. The scrollable output pane fills
-  everything above it.
-- **Mouse-wheel scroll** — scroll up to read history without losing your
-  place; new replies keep arriving below the fold instead of yanking you back
-  down. Scroll back to the bottom (or far enough) and it re-locks
-  automatically. (Hold **Shift** while click-dragging for native text
-  selection/copy — mouse support for scrolling means the terminal hands mouse
-  events to the app, and Shift is the standard bypass every terminal supports
-  for that.)
+- **Locked-to-bottom footer** — spinner/streaming status, input box, optional
+  subagent panel, and a status line (mode · model · effort · tokens/context ·
+  workspace · selection/Copied! chip).
+- **Token streaming** — with OpenAI-compatible providers (NVIDIA NIM, OpenAI,
+  Groq, xAI, local `/v1`, …), replies paint live under a ● while the model
+  generates. Default is **`/stream auto`** (on when the provider supports it).
+  Use `/stream off` for wait-then-dump.
+- **Mouse-wheel scroll** — scroll history without losing place; re-locks at
+  bottom when you return.
+- **Drag-to-copy** — drag over the transcript (red highlight), double-click a
+  line, or triple-click a block. **`/copy`** or **Ctrl+Y** copies the last AI
+  reply only (clean markdown). Release over the input box still finalizes the
+  selection.
 - **Collapsible reasoning + tool calls (Ctrl+O)** — chain-of-thought shows as
-  a grayed-out `? Thought for Ns` line and each tool call as a one-line
-  `? tool(args) ok/error` summary, collapsed by default. `Ctrl+O` toggles
-  every collapsed block open at once to see the full detail.
-- **`/` completion menu** — type `/` for a live menu of every slash command
-  with its description (Tab/?/? to navigate, Enter to accept); no need to run
-  `/help` first, though `/help` still works and shows the same list grouped
-  by category.
-- **Large/multi-line pastes collapse** to a placeholder like
-  `[Pasted text #1 +42 lines]` (same idea as Claude Code's own input box) —
-  the full text is still sent when you submit, only the box display is
-  compact.
-- **Escape to stop a response** — while a reply is generating, `Esc` cancels
-  just that turn (the spinner switches to `? stopping…`) and returns whatever
-  partial answer/tool results it already had; the session itself stays open.
-  It's polled at safe points (before the next model call, between tool
-  calls), so it can't kill a request already in flight, but it ends the turn
-  at the next opportunity instead of waiting for it to run to completion.
-  `Ctrl+D` is still the one that exits the whole session.
-- **Live subagent panel** — appears under the input box whenever the model
-  calls `spawn_agent` (see Tools below), showing one row per child agent:
-  name, status (running/done/error), elapsed time, and its last action.
-  Finished rows linger for ~2s then disappear; auto-hidden when nothing's
-  running.
-- **DeepReid trigger** — type `deepread`/`deep reid` (a few spellings
-  accepted) at the very start of the box: it pulses green, and your message
-  runs through the real Researcher?Planner?Critic pipeline instead of a
-  normal turn. See "DeepReid" under Tools/What works now below.
-- **Nyx mode** — `/nyx on` swaps the assistant's persona to a redteam/
-  offensive-security assistant for authorized pentesting and CTF work,
-  without changing what tools it can call or how the policy engine gates
-  them. See "Nyx (redteam mode)" below.
-- **Keyboard shortcuts in the input box:**
-  - `?` / `?` — input history
-  - `?` / `?` — cycle reasoning effort (`low ? medium ? high ? xhigh`) when
-    the box is empty; otherwise they move the cursor normally
-  - `Ctrl+O` — toggle collapsed/expanded reasoning + tool calls
-  - `Esc` — stop the in-flight response (only while one is generating)
-  - `Ctrl+C` — clear the current line; `Ctrl+D` — exit
-- A small mascot renders next to the welcome banner on launch
-  (`render.py::banner`/`_MASCOT`) — purely cosmetic, easy to swap out.
+  a grayed `✻ Thought for Ns` line; tool calls collapse to one-line summaries.
+  Reasoning is split from tags (`<think>`, GLM
+  `<parameter name="reasoning">`, fences, etc.) and from short untagged
+  monologues when possible.
+- **`/` completion menu** — live menu of every slash command (Tab to navigate,
+  Enter to accept). `/help` shows the same list grouped.
+- **Large/multi-line pastes** collapse to `[Pasted text #1 +N lines]`.
+- **Escape** cancels the in-flight turn at the next safe point; **Ctrl+D**
+  exits the session.
+- **Live subagent panel** — rows for `spawn_agent` children (status, elapsed,
+  last action).
+- **DeepReid trigger** — start the input with `deepread` / `deep reid` to run
+  the Researcher→Planner→Critic pipeline (border pulses green).
+- **Nyx mode** — `/nyx on` for the redteam/offensive-security persona (prompt
+  only; tools/policy unchanged).
+- **Keyboard shortcuts:**
+  - ↑ / ↓ — input history
+  - ← / → — cycle effort (`auto` · `low` · `medium` · `high` · `xhigh`) when
+    the box is empty
+  - `Ctrl+O` — expand/collapse reasoning + tool calls
+  - `Ctrl+Y` — copy last AI reply
+  - `Ctrl+C` — copy selection if any, else clear the line
+  - `Esc` — stop the in-flight response
+  - `Ctrl+D` — exit
 
 ---
 
@@ -160,328 +152,216 @@ input, and layout around it.
 
 | Command | Purpose |
 |---|---|
-| `reid` | Launch the interactive TUI (default — no subcommand needed) |
-| `reid interactive "<prompt>"` | Launch interactive mode and immediately submit `<prompt>` as the first turn — session stays open afterward |
-| `reid --file <path>` / `-f` | Same idea, but read the initial prompt from a text file — works with `interactive`, `exec`, and the bare/no-subcommand form |
-| `reid --nyx` | Launch with the Nyx redteam/offensive-security persona active from the start (also on `interactive` and `exec`) |
-| `<cmd> \| reid` | Pipe a prompt via stdin as the initial turn (only applies to the bare/no-subcommand form) |
-| `reid exec "<prompt>"` | Run a single prompt non-interactively (headless) |
-| `reid deepreid "<task>"` | Plan + review `<task>` via the Researcher/Planner/Critic pipeline (headless, like `exec`) — no code changes, saves a Markdown plan |
-| `reid resume <session-id>` | Resume a prior session, then enter interactive mode |
-| `reid sessions` | List all sessions |
-| `reid config-show` | Show the effective (merged) configuration |
-| `reid tools` | List registered tools with risk levels |
-| `reid doctor` | Run environment diagnostics |
-| `reid version` | Show version and runtime info |
-| `reid --help` | Show the command surface |
+| `reid` | Launch the interactive TUI (default) |
+| `reid interactive "<prompt>"` | Interactive mode; submit `<prompt>` first |
+| `reid --file <path>` / `-f` | Initial prompt from a file |
+| `reid --nyx` | Start with Nyx persona on |
+| `<cmd> \| reid` | Pipe stdin as the initial turn |
+| `reid exec "<prompt>"` | One-shot headless prompt |
+| `reid deepreid "<task>"` | Headless Researcher/Planner/Critic plan |
+| `reid resume <session-id>` | Resume a prior session |
+| `reid sessions` | List sessions |
+| `reid config-show` | Show effective config |
+| `reid tools` | List tools + risk levels |
+| `reid doctor` | Environment diagnostics |
+| `reid version` | Version / runtime info |
+| `reid --help` | Command surface |
 
 ### Slash commands (inside the TUI)
 
-Type `/` in the input box for a live completion menu of all of these with
-descriptions — the table below is the same information, grouped.
+Type `/` for a live menu. Highlights:
 
 **Session**
 
 | Command | Purpose |
 |---|---|
-| `/status` | Show current session, mode, model, task count, workspace |
-| `/sessions` | List all sessions with freshness |
-| `/resume <id>` | Resume a prior session (restores message history) |
-| `/transcript [n]` | Show last n messages (default 20) |
-| `/rewind` | Drop the last turn from state |
+| `/status` | Session, mode, model, tasks, workspace |
+| `/sessions` | List sessions |
+| `/resume <id>` | Resume (restores transcript) |
+| `/transcript [n]` | Last n messages (default 20) |
+| `/rewind` | Drop last turn |
+| `/compact [n\|--force]` | Summarize older turns (keeps last n user turns) |
+| `/cost [reset]` | Session token cost estimate |
+| `/copy` | Copy last AI reply to clipboard (also **Ctrl+Y**) |
+| `/rename <title>` | Rename session |
+| `/recap` | One-line session recap |
+| `/review <pr>` | Review a GitHub PR via `gh` + agent |
 
-**Tasks**
+**Tasks / Goals**
 
 | Command | Purpose |
 |---|---|
-| `/tasks [status]` | List tasks; filter by `pending` `active` `completed` `failed` `blocked` `skipped` |
-
-**Goals**
-
-| Command | Purpose |
-|---|---|
-| `/goal` / `/goal show [id]` | Show the active goal, or a goal by id |
-| `/goal <title>` | Create and activate a goal from free text |
-| `/goal new <title>` | Create and activate a structured session goal |
-| `/goal outcome <text>` | Set the active goal's success outcome |
-| `/goal evidence add <text>` | Add observable success evidence |
-| `/goal evidence done <index> [note]` | Mark evidence satisfied |
-| `/goal add <title>` | Add a child subgoal |
-| `/goal milestone <title>` | Add a milestone |
-| `/goal list` | List session goals |
-| `/goal active <id\|clear>` | Switch or clear the active goal |
-| `/goal done [id] [note]` | Mark a goal or goal node completed |
-| `/goal block [id] <reason>` | Mark a goal or goal node blocked |
-| `/goal revise <note>` | Record a revision note |
-| `/goal abandon [id] <reason>` | Abandon a goal or goal node |
-| `/goal delete <id>` | Delete a goal |
-
-How `/goal` works:
-
-- A **goal** is the durable outcome you are trying to reach in the current
-  session. It is not the same thing as a task.
-- A **task** is still one agent turn in `tasks.json`; a **goal** lives in
-  `goals.json` and tracks the larger outcome behind those turns.
-- The **active goal** is the goal new tasks are linked to automatically. Use
-  `/goal active <id>` to switch it, or `/goal active clear` to stop linking
-  new tasks.
-- `outcome` is the success condition in plain language.
-- `evidence` is what would prove the goal is done. `/goal done` refuses to
-  complete a goal with no evidence, so the feature nudges you away from vague
-  activity tracking.
-- `add` creates child subgoals. `milestone` creates progress markers. `block`,
-  `revise`, and `abandon` keep the history honest when reality changes.
-- Free text is accepted as a shortcut for creating a new active goal, so
-  `/goal make me a report of ReidX` is the same kind of action as
-  `/goal new make me a report of ReidX`.
-
-Typical flow:
-
-```text
-/goal make me a report of ReidX
-/goal outcome A useful report exists and cites the relevant code/docs
-/goal evidence add Report covers command surface, runtime, tools, and persistence
-/goal add Inspect README and docs
-/goal milestone Draft report outline
-/goal show
-```
-
-After that, normal prompts you send in the TUI become tasks linked to the
-active goal. Use `/tasks` to inspect execution history and `/goal show` to
-inspect the goal hierarchy, evidence, blockers, and revisions.
+| `/tasks [status]` | List tasks (`pending` `active` `completed` `failed` `blocked`) |
+| `/goal …` | Goal hierarchy, evidence, milestones (see `/help`) |
 
 **Config & Policy**
 
 | Command | Purpose |
 |---|---|
-| `/model <name>` | Set the model for the session |
-| `/effort <level>` | Set reasoning effort: `low` `medium` `high` `xhigh` |
-| `/mode <mode>` | Set permission mode: `strict` `balanced` `autonomous` `custom` |
-| `/nyx [on\|off]` | Toggle the Nyx redteam/offensive-security persona for this session (no args shows current state) |
-| `/permissions` | Show current policy: mode, blocked/allowed commands, writable roots, timeouts |
-| `/tools` | List registered tools with risk-level badges |
-
-**Workflows**
-
-| Command | Purpose |
-|---|---|
-| `/workflows` | List saved workflows |
-| `/workflow save <name> [n]` | Save the last `n` user turns as a reusable workflow (default 5) |
-| `/workflow show <name>` | Show a workflow's steps |
-| `/workflow run <name>` | Run a workflow's steps in sequence — each step gets the same handling as typing it directly (slash commands and prompts both work, spinner/approval included) |
-| `/workflow delete <name>` | Delete a workflow |
-
-Workflows are global (not tied to a session or workspace) and persist to
-`~/.reidx/workflows.json`, so a workflow saved in one session is runnable
-from any other.
+| `/model [name\|list]` | List models from the active provider, or set by id |
+| `/effort <level>` | `auto` `low` `medium` `high` `xhigh` (`auto` classifies the prompt) |
+| `/stream [auto\|on\|off]` | Token streaming (default **auto** = on when supported) |
+| `/mode <mode>` | `strict` `balanced` `autonomous` `custom` |
+| `/nyx [on\|off]` | Redteam persona |
+| `/permissions` | Policy + gates |
+| `/tools` | Registered tools |
 
 **Providers**
 
 | Command | Purpose |
 |---|---|
-| `/providers` | List registered providers (persisted + auto-registered), showing which is active |
-| `/connect <name> <kind> <base_url> [api_key] [model]` | Add a provider (`kind`: `anthropic` `openai` `openai-compatible` `ollama`); persists to disk |
-| `/disconnect <name>` | Remove a saved provider (not the active one, not the built-ins) |
-| `/use <name>` | Switch this session to a registered provider |
+| `/providers` | List providers (settings + `providers.db`) |
+| `/connect …` | Add provider (or open the palette with bare `/connect`) |
+| `/disconnect <name>` | Remove a saved provider |
+| `/use <name>` | Switch session provider (aliases work, e.g. `nvidia` → `NVIDIA NIM`) |
+| `/models [provider]` | List models across providers |
 
-**Meta**
+**Workflows / Meta**
 
 | Command | Purpose |
 |---|---|
-| `/help` | Show grouped help |
+| `/workflows` / `/workflow …` | Save / run / show / delete workflows |
+| `/help` | Grouped help |
 | `/clear` | Clear the output pane |
-| `/exit` | Quit ReidX (also `Ctrl+D`; `Ctrl+C` clears the current input line) |
+| `/exit` | Quit (`Ctrl+D`) |
 
 ---
 
 ## Providers
 
-`stub` (offline, deterministic) is always registered and always the default —
-nothing auto-promotes over it. Real HTTP providers all speak stdlib `urllib`
-(no extra dependency):
+`stub` is always registered as an offline fallback. Real HTTP providers use
+stdlib `urllib` (no extra dependency):
 
 | Kind | Notes |
 |---|---|
-| `anthropic` | Anthropic Messages API (`/v1/messages`); also works against Anthropic-compatible proxies via `base_url` |
-| `openai` | OpenAI-compatible chat completions API |
-| `openai-compatible` | Same wire format as `openai`, for arbitrary self-hosted/compatible endpoints |
-| `ollama` | Local Ollama server |
+| `anthropic` | Messages API (`/v1/messages`) |
+| `openai` | Chat Completions + **SSE streaming** |
+| `openai-compatible` | Same wire format (NIM, Groq, xAI, vLLM, LM Studio, …) + **streaming** |
+| `ollama` | Local Ollama tags/chat API |
 
-Two ways to get a real provider registered:
+### Connect
 
-1. **Env vars** (Anthropic only, auto-registered at startup, never made
-   default): `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL`.
-2. **`/connect`** — persists a `ProviderRecord` to
-   `<storage_root>/providers.json` (chmod `600` on POSIX) and registers it
-   immediately:
+1. **Env vars** — `ANTHROPIC_*` / `OPENAI_*` auto-register when set.
+2. **`/connect`** or the provider palette — keys land in `providers.db`
+   (encrypted via keychain); startup prefers a real connected provider over
+   stub.
 
-   ```
-   /connect anthropic anthropic "" sk-ant-... claude-sonnet-5
-   /connect local ollama http://localhost:11434 "" llama3
-   /use local
-   ```
+```
+/connect
+/use nvidia
+/model list
+/model z-ai/glm-5.2
+```
 
-`/use` is session-scoped: it rebuilds the agent against the new provider but
-never changes `config.default_provider`, so `stub` is still what a fresh
-session starts on until you `/use` again. `/disconnect` refuses to remove the
-active provider or either built-in name (`stub`, `anthropic`).
+`/use` updates the live session **and** persists `default_provider` so the
+next launch does not fall back to offline stub. Provider aliases
+(`nvidia`, catalog ids, case-insensitive names) resolve to the stored display
+name.
 
-`spawn_agent` (see Tools below) inherits the parent's active provider by
-default, so switching to a local model at the top level applies to child
-agents too — it can also be given a one-off `provider`/`model` override.
+Incomplete settings-only rows (name + model, no `base_url`) no longer block
+the real database entry (fixes bad `localhost:8080` registrations).
+
+### Streaming
+
+| Mode | Behavior |
+|---|---|
+| `auto` (default) | Stream when `provider.supports_streaming` |
+| `on` | Prefer streaming |
+| `off` | Full response before display |
+
+OpenAI-compatible SSE (`stream: true`) paints tokens in the transcript while
+the footer shows `streaming…`. Tool-call fragments are still accumulated
+before tools run.
 
 ---
 
 ## Nyx (redteam mode)
 
-Nyx swaps the assistant's system prompt to a redteam/offensive-security
-persona for authorized penetration testing, CTF competitions, and security
-research — recon, exploit development, payload construction, privilege
-escalation, C2 usage, and report writing, described directly rather than with
-vague hedging. It still pushes back on requests with no stated engagement
-scope, or mass-scale/destructive/indiscriminate techniques.
-
-Nyx **only changes the system prompt.** Tool access and policy gating are
-completely unaffected — the `ToolRegistry`/`PolicyEngine`, not the prompt, is
-the actual safety boundary (the same design used by DeepReid's role prompts).
-
-Turn it on three ways:
+Nyx swaps the system prompt to a redteam/offensive-security persona for
+authorized pentesting, CTFs, and security research. **Tools and policy are
+unchanged** — the registry/policy engine remains the safety boundary.
 
 ```powershell
-reid --nyx                # from launch
-reid interactive --nyx "<prompt>"
-reid exec --nyx "<prompt>"
+reid --nyx
 ```
-
-or at runtime inside the TUI:
 
 ```
 /nyx on
 /nyx off
-/nyx            # show current state
 ```
 
 ---
 
 ## Subagents (`spawn_agent`)
 
-The agent can call `spawn_agent` to run a scoped child agent inline and block
-on its result — useful for parallel research, focused review, or anything
-that shouldn't pollute the main conversation's context. Each child gets:
-
-- its **own** `Agent` + `PolicyEngine` (same config/mode as the parent, but
-  an independent instance — a child running in a stricter mode never mutates
-  the parent's)
-- a **filtered `ToolRegistry`** built from an explicit `tool_allowlist` (default:
-  `read_file`, `list_dir`, `find_files`, `grep_files` — read-only). The child
-  literally cannot see or call anything outside that allowlist.
-- the parent's **provider/model by default**, with optional per-call overrides
-- **no** `spawn_agent` of its own — one layer of nesting only, so a runaway
-  chain of subagents can't spawn subagents of their own
-
-Lifecycle is reported to a `SubagentManager` that the TUI's subagent panel
-subscribes to (see "The interactive TUI" above) — running/done/error, elapsed
-time, last action.
+Scoped child agents with their own policy instance, tool allowlist (default
+read-only), and optional provider/model override. One nesting layer only.
+Progress appears in the live subagent panel.
 
 ---
 
 ## DeepReid
 
-A real Researcher?Planner?Critic subagent pipeline for planning and
-reviewing a task before any code gets written:
+Researcher → Planner → Critic pipeline for planning before implementation:
 
-- **Researcher** — read-only file tools + `web_search`, investigates the
-  codebase/web and produces a cited Findings list. Never writes files or
-  runs commands.
-- **Planner** — no tools, reasons only over the Findings, produces numbered
-  implementation steps + risks + open questions.
-- **Critic** — no tools, checks the Plan against the Findings for
-  unsupported claims, missing cases, and contradictions; ends with a
-  `Verdict: ready to build | needs revision | blocked on: ...` line.
-- If the Critic asks for a revision, the Planner gets one more pass (capped
-  at 2 rounds total) before the pipeline returns.
-
-Each role is a fresh, independent `Agent` + `RuntimeState` + `Session` +
-`PolicyEngine` — not turns on one shared conversation — so the "Planner/Critic
-have no tools" constraint is real (they can't see any prior tool output). All
-three run in `AUTONOMOUS` mode internally regardless of the caller's
-configured mode; the restricted tool registries are the actual safety
-boundary, so auto-approving inside them is safe.
-
-Output is a Markdown plan+critique, saved to
-`~/.reidx/deepreid/<run-id>.md`. Two entry points:
+- **Researcher** — read-only files + `web_search`
+- **Planner** — plan from findings (no tools)
+- **Critic** — revision loop (capped)
 
 ```powershell
-reid deepreid "<task>"          # headless, like exec
+reid deepreid "<task>"
 ```
 
-or type `deepread`/`deep reid` at the very start of the TUI's input box (the
-border pulses green while the pipeline runs, with real-time progress shown
-per stage).
-
-DeepReid never writes files or runs commands itself — building the plan is
-still the regular single-agent loop, or a human, for now (see "What is
-stubbed" below).
+Or type `deepread` / `deep reid` at the start of the TUI input. Plans save
+under `~/.reidcli/deepreid/`.
 
 ---
 
 ## Configuration
 
-Config is merged in this precedence order (low ? high):
+Precedence (low → high):
 
-1. **Built-in defaults** — a stub provider, balanced mode
-2. **Global config** — `~/.reidx/config.json`
-3. **Project config** — `./.reidx/config.json`
-4. **`settings.json`'s `reidx` block** (see below)
-5. **Environment variables** (highest)
+1. Built-in defaults  
+2. Global `~/.reidcli/config.json`  
+3. Project `./.reidx/config.json`  
+4. `settings.json` `reidx` block  
+5. Environment variables  
 
-### `settings.json` (Claude-Code-shaped project settings)
+### Storage root
 
-ReidX also reads a Claude-Code-style `settings.json`: an `env` block
-(applied to `os.environ` before anything reads credentials — this is how a
-project can bake in Anthropic-compatible proxy credentials even when the
-shell's own `ANTHROPIC_*` vars point somewhere else) and an optional
-`reidx` block (baked-in `default_provider`, `policy`, etc.). Unknown keys
-(`theme`, `effortLevel`, ...) are ignored harmlessly, so an existing Claude
-Code settings file works as-is.
+Default user data lives under **`~/.reidcli`** (override with `REIDX_STORAGE`).
+Older installs (`.reidx`, Windows `%APPDATA%\Reid`) are migrated once on first
+access.
 
-Path resolution (first hit wins):
+### `settings.json`
 
-1. `$REIDCHAT_SETTINGS` (explicit override)
-2. A project-local `settings.json`, found by walking upward from the current
-   directory the way `git` finds `.git` — so launching `reid` from any
-   subdirectory of a project still finds that project's file
-3. `~/.reidx/settings.json` (global default)
-4. `E:/leech/Reidchat.json` (legacy shared file)
+Auto-created at `~/.reidcli/settings.json` on first run / `npm install`. Empty
+env placeholders do **not** wipe ambient `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+Project-local `settings.json` still wins when found by walking up from CWD.
+See `settings.example.json` in the repo.
+
+Path resolution:
+
+1. `$REIDCHAT_SETTINGS`  
+2. Project `settings.json` (walk upward)  
+3. `~/.reidcli/settings.json` (seeded if missing)  
+4. Legacy `~/Reidchat.json` only until the new path exists  
 
 ### Environment variables
 
 | Variable | Effect |
 |---|---|
-| `REIDX_PROVIDER` | Default provider name (e.g. `stub`) |
-| `REIDX_WORKSPACE` | Workspace root path |
-| `REIDX_STORAGE` | Storage root path (defaults to `~/.reidx`) |
-| `REIDX_PERMISSION_MODE` | Permission mode: `strict` `balanced` `autonomous` `custom` |
-| `REIDX_LOG_LEVEL` | Log level: `INFO` `DEBUG` `WARNING` `ERROR` |
-| `REIDCHAT_SETTINGS` | Explicit path override for the `settings.json` lookup above |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` | Auto-registers an `anthropic` provider at startup (never made default; `/use anthropic`) |
-
-### Config file example
-
-`~/.reidx/config.json`:
-
-```json
-{
-  "default_provider": "stub",
-  "policy": {
-    "default_mode": "balanced",
-    "allowed_commands": ["git", "ls", "pwd"],
-    "shell_timeout_seconds": 30
-  }
-}
-```
-
-View the effective merged config:
+| `REIDX_PROVIDER` | Default provider name |
+| `REIDX_WORKSPACE` | Workspace root |
+| `REIDX_STORAGE` | Storage root (default `~/.reidcli`) |
+| `REIDX_PERMISSION_MODE` | `strict` `balanced` `autonomous` `custom` |
+| `REIDX_LOG_LEVEL` | Log level |
+| `REIDX_INSECURE` | Disable TLS verify (dev only) |
+| `REIDX_COLOR` | `auto` `truecolor` `256` `16` `none` |
+| `NO_COLOR` | Disable colour |
+| `REIDCHAT_SETTINGS` | Explicit settings path |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL` | Anthropic provider |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | OpenAI / compatible |
 
 ```powershell
 reid config-show
@@ -491,231 +371,132 @@ reid config-show
 
 ## Permission modes
 
-The policy engine gates every tool call. Pick a mode that matches your trust level.
-
 | Mode | Behavior |
 |---|---|
-| `strict` | Approve nearly everything. File reads allowed; writes prompt; shell denied. |
-| `balanced` | (Default) Low-risk allowed; medium and high risk prompt for approval. |
-| `autonomous` | Low and medium allowed without prompts; high risk still prompts. |
-| `custom` | Only explicit allowlists permit; everything else prompts. |
+| `strict` | Approve nearly everything; shell often denied |
+| `balanced` | (Default) Low allowed; medium/high prompt |
+| `autonomous` | Low/medium allowed; high still prompts |
+| `custom` | Explicit allowlists only |
 
-Path confinement is enforced in all modes — file tools cannot read or write outside
-the workspace root (plus any configured `additional_writable_roots`). Shell commands
-in the default denylist (`rm`, `rmdir`, `del`, `format`, `shutdown`, `reboot`, `mkfs`)
-are always blocked.
-
-This same policy engine is what actually gates `spawn_agent` children and Nyx
-mode — neither persona nor tool inheritance bypasses it.
-
-Switch modes at runtime:
-
-```
-/mode strict
-/mode autonomous
-```
+Path confinement and shell denylist apply in all modes.
 
 ---
 
 ## Tools
 
-The agent loop calls tools through the registry. Each tool is policy-gated.
-
 | Tool | Risk | Purpose |
 |---|---|---|
-| `read_file` | low | Read a file's text content |
-| `write_file` | medium | Create or overwrite a file |
-| `patch_file` | medium | Replace one exact substring occurrence (unique match required) |
-| `list_dir` | low | List entries in a directory |
-| `find_files` | low | Find files matching a glob pattern |
-| `grep_files` | low | Search file contents with a regex |
-| `run_command` | high | Run a shell command with policy approval and timeout |
-| `web_search` | high | Search the web (DuckDuckGo, free, no API key) — see below |
-| `spawn_agent` | medium | Run a scoped child agent (own policy engine + tool allowlist) and block for its result — see "Subagents" above |
-
-All file tools confine access to the workspace root. Traversal outside is denied.
-
-### `web_search`
-
-Free, no API key, stdlib-only (`urllib` + `re`). Two DuckDuckGo sources, tried
-in order:
-
-1. The official Instant Answer JSON API — fast (~0.3s), but only populated
-   for factual/entity queries ("what is X").
-2. The HTML-only search endpoint — slower and more exposed to DuckDuckGo's
-   anti-bot rate limiting, but covers general search queries the fast path
-   doesn't.
-
-Results are cached in-memory per session (5 minute TTL) so repeated queries
-don't re-hit the network. Sponsored/ad results are filtered out rather than
-surfaced as raw tracking links. Gated as `ActionKind.NETWORK` (HIGH risk by
-default) through the same policy engine as every other tool — expect an
-approval prompt in `balanced`/`strict` mode.
+| `read_file` | low | Read file text |
+| `write_file` | medium | Create/overwrite file |
+| `patch_file` | medium | Unique substring replace |
+| `list_dir` | low | List directory |
+| `find_files` | low | Glob search |
+| `grep_files` | low | Regex search |
+| `run_command` | high | Shell with policy + timeout |
+| `web_search` | high | DuckDuckGo (stdlib, no API key) |
+| `spawn_agent` | medium | Scoped child agent |
 
 ---
 
 ## Sessions and persistence
 
-Each session gets a structured directory under `~/.reidx/sessions/<id>/`:
-
 ```
-~/.reidx/sessions/<session-id>/
-  meta.json         # Session record (id, workspace, model, mode, status, timestamps)
-  transcript.jsonl  # One Message per line (restorable into state on resume)
-  tasks.json        # Task state for the session
-  goals.json        # Goal hierarchy, evidence, active goal, revisions
-  events.jsonl      # Runtime action log (turn summaries, lifecycle events)
-```
-
-Workflows and connected providers live one level up, outside any single session:
-
-```
-~/.reidx/workflows.json   # {"workflows": [{name, description, steps, created_at}, ...]}
-~/.reidx/providers.json   # {"providers": [{name, kind, base_url, api_key, default_model}, ...]} (chmod 600)
+~/.reidcli/
+  settings.json
+  providers.db / providers.json
+  workflows.json
+  sessions/<id>/
+    meta.json
+    transcript.jsonl
+    tasks.json
+    goals.json
+    events.jsonl
+    costs.jsonl
+  deepreid/<run-id>.md
 ```
 
-**Resume is real:** `reid resume <id>` reloads the transcript into the agent's
-message history so the conversation continues with full context (capped at the 100
-most recent messages).
-
-List sessions:
-
-```powershell
-reid sessions
-```
+**Resume is real:** `reid resume <id>` reloads transcript messages (recent
+cap). Context can be compacted with `/compact` or auto-compact near the model
+window limit.
 
 ---
 
 ## Headless / exec mode
 
-Run a single prompt without entering the TUI:
-
 ```powershell
 reid exec "list the current dir"
-reid exec "read README.md"
-reid exec --file prompt.txt
 reid exec --nyx "recon plan for <authorized target>"
 ```
 
-Output goes to stdout; tool-call count goes to stderr. Exit code is `0` on success,
-`1` if no text was produced. The approver auto-allows in exec mode — set
-`REIDX_PERMISSION_MODE=autonomous` for unattended runs, or `strict` to deny all
-risky actions silently.
+Stdout = answer; tool count on stderr. Exit `1` on provider errors. Approver
+auto-allows in exec mode.
 
 ---
 
 ## Development
 
-### Run the test suite
-
 ```powershell
 pytest
-```
-
-43 focused tests cover policy, tools, session/task/goal persistence, reasoning,
-the agent loop, DeepReid, and providers/subagents.
-
-### Lint
-
-```powershell
 ruff check src tests
-ruff check --fix src tests   # auto-fix
 ```
+
+Tests cover policy, tools, session, reasoning/thinking split (including GLM
+`<parameter name="reasoning">`), agent soft-errors, providers/aliases,
+context windows, compact, cost, effort auto, settings seed, and **SSE
+streaming**.
 
 ### Project structure
 
 ```
 ReidX/
   pyproject.toml
+  package.json              # npm wrapper (reid → python -m reidx)
+  settings.example.json
+  bin/reidx.js
+  scripts/postinstall.js    # pip install + seed ~/.reidcli/settings.json
   src/reidx/
-    app/         # Typer CLI commands, dependency wiring
-    config/      # Pydantic config models + loader (global/project/settings.json/env merge)
-    diagnostics/ # logger + JSONL event log
-    session/     # Session model + structured per-session store
-    tasks/       # Task model + store (state machine)
-    goals/       # Goal model + per-session goal hierarchy/evidence store
-    policy/      # PermissionMode, decisions, risk, PolicyEngine
-    provider/    # BaseProvider + StubProvider + Anthropic/OpenAI/OpenAI-compatible/Ollama
-                 # + ProviderRegistry + ProviderStore (persisted /connect records)
-    tools/       # ToolDefinition/Result, registry, file/shell/web-search/spawn_agent tools
-    workflows/   # Workflow model + global WorkflowStore (~/.reidx/workflows.json)
-    nyx/         # Nyx redteam/offensive-security persona (system-prompt swap only)
-    deepreid/    # Researcher->Planner->Critic planning-and-review pipeline
-    runtime/     # RuntimeState, agent loop, orchestrator (composition root), subagent manager
-    integrations/# MCP foundation (config-driven, stubbed lifecycle)
-    automation/  # exec mode (headless)
-    ui/          # theme, render (Rich), app (full-screen prompt_toolkit TUI),
-                 # commands (slash-command routing + completion source), repl (entry point)
-  tests/         # policy, tools, session, reasoning, agent loop, deepreid, providers/subagents
-  docs/          # architecture audit, phase plans
+    app/                    # Typer CLI
+    config/                 # models, loader, settings seed, storage (~/.reidcli)
+    diagnostics/
+    session/ tasks/ goals/ workflows/
+    policy/
+    provider/               # HTTP providers, SSE stream, context_windows, registry
+    provider_manager/       # catalog, keychain DB, connect palette
+    tools/
+    runtime/                # agent, orchestrator, compact, cost, effort_auto, reasoning
+    deepreid/ nyx/
+    ui/                     # full-screen TUI, slash commands, terminal_host
+  tests/
+  docs/
 ```
-
-### Architecture intent
-
-See the parent repo's design docs:
-
-- `reidx-build-plan.md` — full product definition and phase plan
-- `agent-first-cli-spec.md` — generic agent-first CLI specification
-- `docs/reidx-architecture-audit.md` — file-aware critique of this scaffold
-- `docs/reidx-phase-5-plan.md` — correctness fixes + interaction upgrade
-- `../deepreid-spec.md` — spec for DeepReid, the planning/review multi-agent
-  subsystem, now implemented (see above)
 
 ---
 
 ## What works now
 
-- Full-screen TUI (prompt_toolkit): locked-to-bottom footer, mouse-wheel
-  scrollable history, collapsible reasoning/tool-call output (`Ctrl+O`), live
-  subagent panel, `Esc`-to-stop-response, live `/` completion menu
-- Real agent loop with tool calls (StubProvider by default, no API keys
-  needed; real Anthropic/OpenAI/OpenAI-compatible/Ollama providers available
-  via env vars or `/connect`)
-- Session create / list / resume with message history restoration
-- Task tracking with status state machine (pending ? active ? completed/failed/skipped)
-- Goals: `/goal` manages per-session outcome/evidence/subgoal/milestone state
-  in `goals.json`; active goals are linked into new task metadata
-- Policy engine with 4 modes, path confinement, command allowlist/denylist —
-  the single safety boundary for every tool, including subagents and Nyx mode
-- 9 tools (file read/write/patch/list/find/grep + shell + free web search +
-  spawn_agent) all policy-gated
-- Workflows: save/list/show/run/delete reusable multi-step command sequences
-- Providers: real HTTP clients (Anthropic/OpenAI/OpenAI-compatible/Ollama),
-  `/connect`/`/disconnect`/`/use`/`/providers`, persisted to
-  `~/.reidx/providers.json`
-- Subagents: `spawn_agent` tool runs a scoped child agent (own policy engine +
-  tool allowlist, one layer of nesting), live TUI panel showing progress
-- **DeepReid** (`src/reidx/deepreid/`): a real Researcher?Planner?Critic
-  subagent pipeline — each role is an independent `Agent`/`PolicyEngine`
-  (Planner/Critic get zero tools; Researcher gets read-only file tools +
-  `web_search` only), sequential, with a Critic-driven revision loop capped
-  at 2 rounds. Never writes files or runs commands — output is a Markdown
-  plan+critique, saved to `~/.reidx/deepreid/<run-id>.md`. Two entry
-  points: `reid deepreid "<task>"` (headless CLI, like `exec`) and typing
-  `deepread`/`deep reid` at the start of the TUI's input box (border pulses
-  green while active, real-time progress shown per stage).
-- **Nyx**: redteam/offensive-security persona, toggled via `--nyx` or
-  `/nyx on|off` — swaps the system prompt only; tool access/policy gating are
-  unchanged
-- Claude-Code-shaped `settings.json` support (env block + baked-in `reidx`
-  config block), project-local with upward directory search
-- Prompt injection at launch: literal argument, `--file`, or piped stdin
-- Headless exec mode
-- Structured persistence (meta / transcript / tasks / goals / events per session;
-  global workflows, providers, and DeepReid runs)
-- Test suite passing, ruff clean
+- Full-screen TUI: footer, scroll, collapsible CoT/tools, subagent panel,
+  Escape-to-stop, `/` menu, host-friendly terminal colours
+- **Token streaming** (OpenAI-compatible SSE) with `/stream auto|on|off`
+- **Drag-select + red highlight**, `/copy` / Ctrl+Y for last AI reply
+- Soft provider errors (HTTP/network) keep the session up
+- Provider connect reliability: aliases, startup pick over stub, DB overrides
+  incomplete settings, palette key-save fix
+- Context windows from API metadata + known-model table; auto-compact; `/cost`
+- `/effort auto` prompt classification; expanded thinking-tag parsers
+- Real agent loop + Anthropic/OpenAI/compatible/Ollama providers
+- Session resume, tasks, goals, workflows, DeepReid, Nyx
+- Settings auto-seed under `~/.reidcli` (npm + first launch)
+- Headless `exec`, structured persistence, test suite
 
 ## What is stubbed (extension-ready)
 
-- **MCP** — config schema + lifecycle slots; stdio/JSON-RPC is TODO
-- **Patch tool** — single exact-match replace; structured edits + diff preview TODO
-- **Automation** — one-shot exec; scheduling/background TODO
-- **DeepReid Builder role** — a subagent that actually implements an
-  approved plan is explicitly out of scope for v1 (per `../deepreid-spec.md`);
-  building is still the regular single-agent loop, or a human, for now.
-- **Escape-to-stop** only interrupts the normal turn loop (`Agent.run_turn`);
-  the DeepReid pipeline and its subagent calls don't currently check
-  cancellation.
+- **MCP** — config schema + lifecycle slots; full stdio/JSON-RPC TODO  
+- **Patch tool** — single exact replace; structured diff preview TODO  
+- **Automation** — one-shot exec; scheduling/background TODO  
+- **Anthropic native stream** — OpenAI-compatible stream is implemented;
+  Anthropic event-stream TODO  
+- **DeepReid Builder role** — plan only in v1; implementation still main agent  
+- **Escape-to-stop** does not cancel DeepReid pipeline stages  
 
 ---
 

@@ -1,6 +1,6 @@
 ﻿"""Config loader: merge global + project + env into a validated Config.
 
-Precedence (low -> high): defaults < global (~/.reidx/config.json)
+Precedence (low -> high): defaults < global (~/.reidcli/config.json)
 < project (./.reidx/config.json) < environment overrides.
 """
 from __future__ import annotations

@@ -14,10 +14,21 @@ function main() {
     process.exit(1);
   }
 
+  // Inherit the caller's environment so PowerShell / Windows Terminal theme
+  // vars (WT_SESSION, COLORTERM, NO_COLOR, etc.) reach Python. Only pin
+  // UTF-8 for *this* child process — never rewrite the parent shell.
+  const env = { ...process.env };
+  if (!env.PYTHONIOENCODING) {
+    env.PYTHONIOENCODING = "utf-8";
+  }
+  if (!env.PYTHONUTF8 && process.platform === "win32") {
+    env.PYTHONUTF8 = "1";
+  }
+
   const result = spawnSync(
     python.cmd,
     [...python.args, "-m", "reidx", ...process.argv.slice(2)],
-    { stdio: "inherit" }
+    { stdio: "inherit", env }
   );
 
   if (result.error) {

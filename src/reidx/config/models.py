@@ -36,7 +36,7 @@ class Config(BaseModel):
     default_provider: str = "stub"
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     workspace_root: Path | None = None
-    storage_root: Path | None = None  # defaults to ~/.reidx when loaded
+    storage_root: Path | None = None  # defaults to ~/.reidcli when loaded
     log_level: str = "INFO"
 
 
