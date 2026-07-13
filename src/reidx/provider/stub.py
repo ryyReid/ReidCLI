@@ -25,11 +25,16 @@ class StubProvider(BaseProvider):
         text = (last.content if last else "").lower()
         tool_names = {t.get("function", {}).get("name") for t in tools or []}
 
+        hint = (
+            "\n\n_You're on the offline **stub** (no real model). "
+            "Run `/connect` or `/use <provider>` — e.g. `/use nvidia` — to chat for real._"
+        )
+
         # After a tool result comes back, finalize the turn instead of looping.
         last_msg = messages[-1] if messages else None
         if last_msg is not None and last_msg.role == "tool":
             return ProviderResponse(
-                text=f"[stub] Tool returned: {last_msg.content[:200]}",
+                text=f"Tool returned: {last_msg.content[:200]}{hint}",
                 usage=Usage(prompt_tokens=12, completion_tokens=8),
                 stop_reason="stop",
             )
@@ -52,9 +57,11 @@ class StubProvider(BaseProvider):
                 stop_reason="tool_use",
             )
 
-        echo = f"[stub] Acknowledged: {last.content if last else ''}"
+        echo = (
+            f"Offline stub echo (not a real model): {last.content if last else ''}{hint}"
+        )
         return ProviderResponse(
             text=echo,
-            usage=Usage(prompt_tokens=len(echo), completion_tokens=len(echo)),
+            usage=Usage(prompt_tokens=max(1, len(echo) // 4), completion_tokens=8),
             stop_reason="stop",
         )

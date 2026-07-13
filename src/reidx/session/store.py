@@ -86,6 +86,13 @@ class SessionStore:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
 
+    def rewrite_messages(self, session_id: str, messages: list[Message]) -> None:
+        """Replace transcript.jsonl entirely (used by rewind / context compact)."""
+        path = self._dir(session_id) / "transcript.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = "\n".join(m.model_dump_json() for m in messages)
+        path.write_text(body + ("\n" if messages else ""), encoding="utf-8")
+
     def read_messages(self, session_id: str, limit: int = _MAX_RESUME_MESSAGES) -> list[Message]:
         """Read transcript.jsonl back into Message objects (most recent `limit`)."""
         path = self._dir(session_id) / "transcript.jsonl"

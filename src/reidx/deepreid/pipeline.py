@@ -212,8 +212,10 @@ def format_markdown(result: DeepReidResult) -> str:
 
 
 def save_deepreid_result(config: Config, result: DeepReidResult) -> Path:
-    storage_root = config.storage_root or (Path.home() / ".reidx")
-    out_dir = storage_root / "deepreid"
+    from reidx.config.storage import storage_root as default_storage_root
+
+    storage = config.storage_root or default_storage_root()
+    out_dir = storage / "deepreid"
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = time.strftime("%Y%m%d-%H%M%S")
     path = out_dir / f"{run_id}.md"

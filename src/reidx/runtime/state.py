@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from reidx.provider.base import Message
+from reidx.runtime.cost import CostLedger
 from reidx.session.models import Session
 
 
@@ -26,6 +27,10 @@ class RuntimeState:
     # report usage (e.g. StubProvider); the UI falls back to a char estimate then.
     last_usage_prompt_tokens: int = 0
     last_usage_completion_tokens: int = 0
+    # Session cost ledger (USD estimates from token usage × price table).
+    costs: CostLedger = field(default_factory=CostLedger)
+    # When session.reasoning_effort is "auto", the last resolved low|medium|high.
+    last_effort_resolved: str = ""
 
     @property
     def effective_mode(self):

@@ -16,3 +16,4 @@ venv/
 .vscode/
 .idea/
 .ruff_cache/
+settings.json

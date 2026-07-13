@@ -84,28 +84,22 @@ MODE_STYLE = {
 # Visual constants.
 MAX_WIDTH = 80  # constrain panels/tables so they don't span ultra-wide terminals
 
-# Known context-window sizes (tokens) by model prefix, for the status bar's
-# usage readout. Falls back to DEFAULT_CONTEXT_WINDOW for unrecognized models.
-DEFAULT_CONTEXT_WINDOW = 128_000
-CONTEXT_WINDOWS = {
-    "stub": 32_000,
-    "gpt-5": 400_000,
-    "gpt-4": 128_000,
-    "claude": 200_000,
-    "o1": 200_000,
-    "o3": 200_000,
-}
-
-
-def context_window_for(model: str) -> int:
-    for prefix, size in CONTEXT_WINDOWS.items():
-        if model.startswith(prefix):
-            return size
-    return DEFAULT_CONTEXT_WINDOW
+# Context windows live in provider.context_windows (full table + live API cache).
+# Re-export so existing `from reidx.ui.theme import context_window_for` keeps working.
+from reidx.provider.context_windows import (  # noqa: E402
+    DEFAULT_CONTEXT_WINDOW,
+    context_window_for,
+)
 
 
 def fmt_tokens(n: int) -> str:
-    return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+    """Human token counts for the status bar (1.0M, 128.0k, 512)."""
+    if n >= 1_000_000:
+        whole = n / 1_000_000
+        return f"{whole:.1f}M" if whole != int(whole) else f"{int(whole)}.0M"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
 
 
 def short_path(path: str, keep: int = 2) -> str:

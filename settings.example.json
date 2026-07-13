@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy to ~/.reidcli/settings.json (auto-created on first reid run / npm install). Empty env values are ignored so shell API keys still work.",
+  "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_BASE_URL": "",
+    "ANTHROPIC_MODEL": "",
+    "OPENAI_API_KEY": "",
+    "OPENAI_BASE_URL": "",
+    "OPENAI_MODEL": ""
+  },
+  "theme": "dark",
+  "effortLevel": "medium",
+  "reidx": {
+    "default_provider": "stub",
+    "log_level": "WARNING",
+    "policy": {
+      "default_mode": "balanced",
+      "shell_timeout_seconds": 60
+    },
+    "providers": {}
+  }
+}

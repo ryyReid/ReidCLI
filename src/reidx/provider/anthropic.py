@@ -14,11 +14,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from reidx.diagnostics.logger import get_logger
-from reidx.provider._http import get_json, post_json
+from reidx.provider._http import MODELS_TIMEOUT_SECONDS, get_json, post_json
 from reidx.provider.base import BaseProvider, Message, ProviderResponse, ToolCall, Usage
-
-log = get_logger("reidx.provider.anthropic")
+from reidx.provider.context_windows import ingest_models_payload, remember_context
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
 API_VERSION = "2023-06-01"
@@ -151,18 +149,21 @@ class AnthropicProvider(BaseProvider):
             payload["tools"] = anthropic_tools
 
         url = f"{self.base_url}/v1/messages"
-        try:
-            body = post_json(url, payload, self._headers())
-        except RuntimeError:
-            log.exception("Anthropic API request failed")
-            raise
+        # ProviderError/network failures soft-caught by Agent.run_turn — no
+        # console logging here (stderr corrupts the full-screen TUI).
+        body = post_json(url, payload, self._headers())
         return self._parse_response(body, model)
 
-    def fetch_models(self) -> list[str]:
+    def fetch_models(self, *, timeout: int = MODELS_TIMEOUT_SECONDS) -> list[str]:
         url = f"{self.base_url}/v1/models"
-        body = get_json(url, self._headers())
+        body = get_json(url, self._headers(), timeout=timeout)
+        data = body.get("data", [])
+        if isinstance(data, list):
+            ingest_models_payload(data)
         models: list[str] = []
-        for item in body.get("data", []):
+        for item in data if isinstance(data, list) else []:
+            if not isinstance(item, dict):
+                continue
             mid = item.get("id", "")
             if mid:
                 models.append(mid)

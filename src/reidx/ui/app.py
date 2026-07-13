@@ -24,12 +24,14 @@ import functools
 import io
 import random
 import shutil
+import sys
 import threading
 import time
 from collections.abc import Callable
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.clipboard import ClipboardData
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
@@ -40,9 +42,11 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.text import Text
 
@@ -132,8 +136,216 @@ _UI_STYLE = Style.from_dict(
         "palette-search-label": f"bg:{BG} {ACCENT}",
         "palette-sep": f"bg:{BG} {BORDER}",
         "dim-overlay": "bg:#080808",
+        # Mouse drag selection highlight (transcript pane) — bright brand red.
+        "selected": "bg:#ff2a2a #ffffff bold",
     }
 )
+
+# Inline absolute style for drag-select highlight. The transcript pane is built
+# from Rich ANSI fragments (absolute colors), so class styles alone can look
+# muted or get overridden — paint the red highlighter directly on the range.
+_SELECTION_HIGHLIGHT = "bg:#ff2a2a #ffffff bold"
+
+
+def _fragments_to_plain(line_frags) -> str:  # type: ignore[no-untyped-def]
+    return "".join(text for _style, text in line_frags)
+
+
+def _display_width(text: str) -> int:
+    """Visual column width (CJK/emoji) — matches prompt_toolkit wrapping."""
+    try:
+        return get_cwidth(text)
+    except Exception:  # noqa: BLE001
+        return len(text or "")
+
+
+def _line_wrap_height(text: str, width: int) -> int:
+    """Rows a logical line occupies when wrapped to `width` (display columns)."""
+    if width <= 0:
+        return 1
+    if not text:
+        return 1
+    # Walk like a terminal: accumulate display width, wrap at width.
+    rows = 1
+    col = 0
+    for ch in text:
+        w = get_cwidth(ch) if ch not in ("\n", "\r") else 0
+        if w <= 0:
+            continue
+        if col + w > width:
+            rows += 1
+            col = w
+        else:
+            col += w
+    return max(1, rows)
+
+
+def _clean_selected_text(text: str) -> str:
+    """Strip Rich full-width padding spaces from selected transcript lines."""
+    if not text:
+        return ""
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    # Drop purely empty trailing lines from padding; keep intentional blanks mid-block.
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _set_system_clipboard(text: str) -> bool:
+    """Best-effort system clipboard write (Windows + prompt_toolkit fallbacks)."""
+    if not text:
+        return False
+    ok = False
+    # 1) Win32 CF_UNICODETEXT — most reliable for multi-line AI markdown on Windows.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            CF_UNICODETEXT = 13
+            GMEM_MOVEABLE = 0x0002
+
+            if user32.OpenClipboard(None):
+                try:
+                    user32.EmptyClipboard()
+                    # UTF-16-LE + NUL terminator
+                    data = text.encode("utf-16-le") + b"\x00\x00"
+                    h_global = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+                    if h_global:
+                        locked = kernel32.GlobalLock(h_global)
+                        if locked:
+                            ctypes.memmove(locked, data, len(data))
+                            kernel32.GlobalUnlock(h_global)
+                            if user32.SetClipboardData(CF_UNICODETEXT, h_global):
+                                ok = True
+                            else:
+                                kernel32.GlobalFree(h_global)
+                finally:
+                    user32.CloseClipboard()
+        except Exception:  # noqa: BLE001
+            pass
+        if not ok:
+            try:
+                import subprocess
+
+                payload = text.replace("\n", "\r\n").encode("utf-16-le")
+                proc = subprocess.run(
+                    ["clip"],
+                    input=b"\xff\xfe" + payload,
+                    check=False,
+                    capture_output=True,
+                )
+                if proc.returncode == 0:
+                    ok = True
+            except Exception:  # noqa: BLE001
+                pass
+    # 2) macOS / Linux common tools
+    if not ok and sys.platform == "darwin":
+        try:
+            import subprocess
+
+            proc = subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
+            ok = proc.returncode == 0
+        except Exception:  # noqa: BLE001
+            pass
+    if not ok and sys.platform.startswith("linux"):
+        for cmd in (
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+            ["wl-copy"],
+        ):
+            try:
+                import subprocess
+
+                proc = subprocess.run(cmd, input=text.encode("utf-8"), check=False)
+                if proc.returncode == 0:
+                    ok = True
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    return ok
+
+
+def _apply_selection_highlight(
+    line_frags,  # type: ignore[no-untyped-def]
+    *,
+    line_index: int,
+    sel_a: tuple[int, int],
+    sel_b: tuple[int, int],
+):
+    """Return fragments for one line with the selected range in bright red.
+
+    Never paints Rich's full-width trailing pad spaces — that was making the
+    whole terminal look selected when only a few words were in the range.
+    """
+    plain = _fragments_to_plain(line_frags)
+    if not plain:
+        return list(line_frags)
+
+    content_end = len(plain.rstrip())
+    if content_end == 0:
+        # Pure padding / blank line — no red bar.
+        return list(line_frags)
+
+    (a_line, a_col), (b_line, b_col) = sel_a, sel_b
+    if (a_line, a_col) > (b_line, b_col):
+        a_line, a_col, b_line, b_col = b_line, b_col, a_line, a_col
+
+    if line_index < a_line or line_index > b_line:
+        return list(line_frags)
+    start = a_col if line_index == a_line else 0
+    end = b_col if line_index == b_line else content_end
+    # Clamp to real text only (ignore terminal-width space padding).
+    start = max(0, min(start, content_end))
+    end = max(0, min(end, content_end))
+    if start >= end:
+        return list(line_frags)
+
+    # Rebuild character-by-character styles, then paint [start, end) red.
+    chars: list[tuple[str, str]] = []
+    for style, text in line_frags:
+        for ch in text:
+            chars.append((style, ch))
+    out: list[tuple[str, str]] = []
+    buf_style = ""
+    buf_text = ""
+    for i, (style, ch) in enumerate(chars):
+        use = _SELECTION_HIGHLIGHT if start <= i < end else style
+        if use != buf_style and buf_text:
+            out.append((buf_style, buf_text))
+            buf_text = ""
+        buf_style = use
+        buf_text += ch
+    if buf_text:
+        out.append((buf_style, buf_text))
+    return out
+
+
+def _is_turn_boundary_line(text: str) -> bool:
+    """True for blank / section separators so block-select stays on one turn."""
+    s = (text or "").rstrip()
+    if not s:
+        return True
+    t = s.strip()
+    # User echo block
+    if t == "User" or t.startswith("User "):
+        return True
+    if t.startswith("›") or t.startswith("> "):
+        return True
+    # Status / meta lines (not part of the AI answer body)
+    low = t.lower()
+    if low.startswith("provider:"):
+        return True
+    if low.startswith("cost ") or low.startswith("auto-compacted"):
+        return True
+    if low.startswith("copied last reply") or low.startswith("nothing to copy"):
+        return True
+    # Panel / box drawing from the welcome banner
+    if any(ch in t for ch in "╭╮╰╯┌┐└┘│─┌"):
+        return True
+    return False
 
 
 class _ConsoleCapture:
@@ -207,6 +419,30 @@ class _OutputPane:
         self.expanded = False  # global Ctrl+O toggle for collapsible blocks
         self.pinned = True
         self._cursor_line = 0  # only meaningful while not pinned
+        # Selection: (line, col) in logical plain-text lines; inclusive start
+        # and exclusive end after normalize. None when nothing selected.
+        self.sel_anchor: tuple[int, int] | None = None
+        self.sel_cursor: tuple[int, int] | None = None
+        self.selecting = False
+        # Viewport hints written by _OutputWindow for mouse hit-testing.
+        self.view_top = 0
+        self.view_width = 80
+        # Last copy stats for the status bar (right side) — "Copied!" toast.
+        self.sel_line_count = 0
+        self.sel_char_count = 0
+        self.sel_copied_at = 0.0
+        self.sel_copied_lines = 0  # lines at moment of last copy (for toast)
+        # Click tracking: 1=start, 2=line, 3=paragraph/block.
+        self._last_click_t = 0.0
+        self._last_click_line = -1
+        self._click_count = 0
+        # Inclusive line range of the last rendered assistant reply in the pane
+        # (so double-click / Ctrl+Y can select *only* the AI output).
+        self.last_assistant_range: tuple[int, int] | None = None
+        # Raw markdown for that reply (preferred clipboard payload).
+        self.last_assistant_text: str = ""
+        # Live token stream buffer (painted while the model is still generating).
+        self.live_stream: str = ""
 
     def append_static(self, ansi_text: str) -> None:
         if not ansi_text:
@@ -228,6 +464,61 @@ class _OutputPane:
         self._blocks = []
         self.pinned = True
         self._cursor_line = 0
+        self.clear_selection()
+
+    def clear_selection(self) -> None:
+        self.sel_anchor = None
+        self.sel_cursor = None
+        self.selecting = False
+        self.sel_line_count = 0
+        self.sel_char_count = 0
+        self._click_count = 0
+
+    def select_line(self, line: int) -> str:
+        """Select an entire logical line; return its text.
+
+        If the line is inside the last assistant reply range, select that whole
+        reply instead (users almost always want the AI block, not one row).
+        """
+        lines = self.plain_lines()
+        if not lines:
+            self.clear_selection()
+            return ""
+        line = max(0, min(line, len(lines) - 1))
+        ar = self.last_assistant_range
+        if ar is not None:
+            a0, a1 = ar
+            a0 = max(0, min(a0, len(lines) - 1))
+            a1 = max(a0, min(a1, len(lines) - 1))
+            if a0 <= line <= a1:
+                return self.select_line_range(a0, a1)
+        content_end = len(lines[line].rstrip())
+        self.sel_anchor = (line, 0)
+        self.sel_cursor = (line, content_end)
+        self.selecting = False
+        self.update_selection_stats()
+        return self.selected_text()
+
+    def select_line_range(self, start: int, end: int) -> str:
+        """Select inclusive logical lines [start, end] (content only, no pad)."""
+        lines = self.plain_lines()
+        if not lines:
+            self.clear_selection()
+            return ""
+        start = max(0, min(start, len(lines) - 1))
+        end = max(start, min(end, len(lines) - 1))
+        self.sel_anchor = (start, 0)
+        self.sel_cursor = (end, len(lines[end].rstrip()))
+        self.selecting = False
+        self.update_selection_stats()
+        return self.selected_text()
+
+    def select_last_assistant(self) -> str:
+        """Select only the last AI reply block in the transcript pane."""
+        if self.last_assistant_range is None:
+            return ""
+        a0, a1 = self.last_assistant_range
+        return self.select_line_range(a0, a1)
 
     def _all_fragments(self):  # type: ignore[no-untyped-def]
         out: list = []
@@ -237,6 +528,132 @@ class _OutputPane:
             else:
                 out.extend(block.fragments)
         return out
+
+    def plain_lines(self) -> list[str]:
+        return [_fragments_to_plain(line) for line in split_lines(self._all_fragments())]
+
+    def selection_bounds(self) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        if self.sel_anchor is None or self.sel_cursor is None:
+            return None
+        a, b = self.sel_anchor, self.sel_cursor
+        return (a, b) if a <= b else (b, a)
+
+    def selected_text(self) -> str:
+        bounds = self.selection_bounds()
+        if bounds is None:
+            return ""
+        (a_line, a_col), (b_line, b_col) = bounds
+        lines = self.plain_lines()
+        if not lines:
+            return ""
+        a_line = max(0, min(a_line, len(lines) - 1))
+        b_line = max(0, min(b_line, len(lines) - 1))
+        if a_line == b_line:
+            raw = lines[a_line][a_col:b_col]
+        else:
+            parts = [lines[a_line][a_col:]]
+            for i in range(a_line + 1, b_line):
+                parts.append(lines[i])
+            parts.append(lines[b_line][:b_col])
+            raw = "\n".join(parts)
+        # Rich pads lines to full console width with trailing spaces — strip
+        # those so AI markdown copies cleanly (and strip() checks aren't empty).
+        return _clean_selected_text(raw)
+
+    def select_block_around(self, line: int) -> str:
+        """Select one turn/paragraph around `line` — never the whole session.
+
+        Stops at blank lines and turn markers (User / provider / banner boxes)
+        so triple-click on the AI answer does not also grab the banner + user.
+        Prefers the last assistant range when the click lands inside it.
+        """
+        lines = self.plain_lines()
+        if not lines:
+            self.clear_selection()
+            return ""
+        line = max(0, min(line, len(lines) - 1))
+
+        # Prefer the exact last AI reply when the user clicks inside it.
+        ar = self.last_assistant_range
+        if ar is not None:
+            a0, a1 = ar
+            a0 = max(0, min(a0, len(lines) - 1))
+            a1 = max(a0, min(a1, len(lines) - 1))
+            if a0 <= line <= a1:
+                return self.select_line_range(a0, a1)
+
+        def can_include(i: int) -> bool:
+            if i < 0 or i >= len(lines):
+                return False
+            if _is_turn_boundary_line(lines[i]):
+                return False
+            return bool(lines[i].rstrip())
+
+        if not can_include(line):
+            for delta in (1, -1, 2, -2):
+                j = line + delta
+                if can_include(j):
+                    line = j
+                    break
+            else:
+                return self.select_line(line)
+
+        # If we landed on an assistant bullet block, expand only that answer
+        # (from the ● line through following body lines until a boundary).
+        lo = line
+        while lo > 0 and can_include(lo - 1):
+            lo -= 1
+        hi = line
+        while hi + 1 < len(lines) and can_include(hi + 1):
+            hi += 1
+        return self.select_line_range(lo, hi)
+
+    def update_selection_stats(self) -> None:
+        text = self.selected_text()
+        if not text:
+            self.sel_line_count = 0
+            self.sel_char_count = 0
+            return
+        # Line count = newlines + 1 for non-empty selection (matches editors).
+        self.sel_line_count = text.count("\n") + 1
+        self.sel_char_count = len(text)
+
+    def screen_to_pos(self, y: int, x: int) -> tuple[int, int]:
+        """Map viewport (row, col) to logical (line, col) using wrap + view_top.
+
+        Uses display width (not raw len) so wrapped AI markdown / CJK lines
+        map to the same rows prompt_toolkit actually paints.
+        """
+        lines = self.plain_lines()
+        if not lines:
+            return 0, 0
+        width = max(1, self.view_width)
+        y = max(0, y)
+        x = max(0, x)
+        row = 0
+        for li in range(self.view_top, len(lines)):
+            plain = lines[li]
+            h = _line_wrap_height(plain, width)
+            if row + h > y:
+                # Character index for the visual column on this wrap row.
+                target_cols = (y - row) * width + x
+                col = 0
+                disp = 0
+                for ch in plain:
+                    cw = get_cwidth(ch)
+                    if disp + cw > target_cols:
+                        break
+                    disp += cw
+                    col += 1
+                col = max(0, min(len(plain), col))
+                # Prefer landing inside real text, not Rich trailing pad spaces.
+                stripped = plain.rstrip()
+                if col > len(stripped) and stripped:
+                    col = len(stripped)
+                return li, col
+            row += h
+        last = len(lines) - 1
+        return last, len(lines[last].rstrip())
 
     def scroll_up(self, lines: int = 3) -> None:
         total = max(1, len(list(split_lines(self._all_fragments()))))
@@ -275,40 +692,207 @@ class _OutputPane:
         # bottom-anchored scrolling that offset/cursor tricks can't (the
         # renderer refuses to leave blank space below the last line).
         lines = list(split_lines(self._all_fragments()))
+        # Live stream tokens (while the model is still generating).
+        if self.live_stream:
+            stream_frags = [
+                ("", "\n"),
+                (f"{PRIMARY} bold", f"{BULLET} "),
+                ("#d0d0d0", self.live_stream),
+                ("#9e9e9e", " ▍"),
+            ]
+            lines.extend(list(split_lines(stream_frags)))
         total = len(lines)
         if total == 0:
             return []
+        bounds = self.selection_bounds()
         out: list = []
         for i, line in enumerate(lines):
-            out.extend(line)
+            if bounds is not None:
+                out.extend(_apply_selection_highlight(line, line_index=i, sel_a=bounds[0], sel_b=bounds[1]))
+            else:
+                out.extend(line)
             if i != total - 1:
                 out.append(("", "\n"))
         return out
 
 
-class _ScrollableOutputControl(FormattedTextControl):
-    """FormattedTextControl that routes mouse wheel scroll to callbacks.
+def finish_output_selection(  # type: ignore[no-untyped-def]
+    pane: _OutputPane,
+    *,
+    on_copy_selection,
+    on_selection_changed,
+    line: int | None = None,
+    col: int | None = None,
+) -> bool:
+    """End an in-progress drag and copy if anything is selected.
 
-    The default `Window._mouse_handler` fallback for scroll events just
-    nudges `vertical_scroll` by +-1, which is exactly what gets fought and
-    reverted by the cursor-follow recomputation described on `_OutputPane`.
-    Intercepting here lets scroll wheel drive the same marker-relocation
-    logic as the PageUp/PageDown key bindings.
+    Called from the output pane on mouse-up *and* from other windows (input
+    box) so releasing the button outside the transcript still copies.
+    Returns True if a selection was finalized.
+
+    If the drag lands entirely inside the last AI reply, copy the clean raw
+    markdown instead of the rendered pane text (no bullet/padding junk).
     """
+    if not pane.selecting and pane.selection_bounds() is None:
+        return False
+    if pane.selecting:
+        if line is not None and col is not None:
+            pane.sel_cursor = (line, col)
+        pane.selecting = False
+    pane.update_selection_stats()
+    text = pane.selected_text()
+    ar = pane.last_assistant_range
+    raw = (pane.last_assistant_text or "").strip()
+    bounds = pane.selection_bounds()
+    # Full last-reply selection → clean markdown; partial drag keeps rendered slice.
+    if ar is not None and bounds is not None and raw:
+        (b0, _), (b1, _) = bounds
+        a0, a1 = ar
+        if b0 == a0 and b1 == a1:
+            text = raw
+    if text.strip():
+        on_copy_selection(text)
+        on_selection_changed()
+        return True
+    pane.clear_selection()
+    on_selection_changed()
+    return False
 
-    def __init__(self, get_fragments, on_scroll_up, on_scroll_down, **kwargs) -> None:  # type: ignore[no-untyped-def]
+
+def _handle_output_mouse(  # type: ignore[no-untyped-def]
+    pane: _OutputPane,
+    mouse_event: MouseEvent,
+    *,
+    on_scroll_up,
+    on_scroll_down,
+    on_selection_changed,
+    on_copy_selection,
+) -> object | None:
+    """Shared mouse logic: drag over text → highlight; release → clipboard.
+
+    Returns None when handled (prompt_toolkit: stop propagation).
+    """
+    et = mouse_event.event_type
+    if et == MouseEventType.SCROLL_UP:
+        on_scroll_up()
+        return None
+    if et == MouseEventType.SCROLL_DOWN:
+        on_scroll_down()
+        return None
+
+    pos = mouse_event.position
+    y = int(getattr(pos, "y", 0) or 0)
+    x = int(getattr(pos, "x", 0) or 0)
+
+    if et == MouseEventType.MOUSE_DOWN:
+        line, col = pane.screen_to_pos(y, x)
+        now = time.monotonic()
+
+        def _copy_payload_for_selection() -> str:
+            """Prefer raw AI markdown when the whole last reply is selected."""
+            ar = pane.last_assistant_range
+            bounds = pane.selection_bounds()
+            raw = (pane.last_assistant_text or "").strip()
+            if ar is not None and bounds is not None and raw:
+                (b0, _c0), (b1, _c1) = bounds
+                a0, a1 = ar
+                if b0 == a0 and b1 == a1:
+                    return raw
+            return pane.selected_text()
+
+        # Triple-click → one turn block (AI-only when on the last reply).
+        if (
+            now - pane._last_click_t < 0.45
+            and abs(pane._last_click_line - line) <= 1
+            and getattr(pane, "_click_count", 0) >= 1
+        ):
+            if getattr(pane, "_click_count", 0) >= 2:
+                text = pane.select_block_around(line)
+                pane._last_click_t = 0.0
+                pane._last_click_line = -1
+                pane._click_count = 0
+                payload = _copy_payload_for_selection() or text
+                if payload.strip():
+                    on_copy_selection(payload)
+                on_selection_changed()
+                return None
+            # Double-click → last AI reply if inside it, else one line.
+            text = pane.select_line(line)
+            pane._click_count = 2
+            pane._last_click_t = now
+            pane._last_click_line = line
+            payload = _copy_payload_for_selection() or text
+            if payload.strip():
+                on_copy_selection(payload)
+            on_selection_changed()
+            return None
+        pane._last_click_t = now
+        pane._last_click_line = line
+        pane._click_count = 1
+        pane.sel_anchor = (line, col)
+        pane.sel_cursor = (line, col)
+        pane.selecting = True
+        pane.update_selection_stats()
+        on_selection_changed()
+        return None
+
+    # Drag: update highlight while the button is held (MOUSE_MOVE while selecting).
+    if et == MouseEventType.MOUSE_MOVE:
+        if pane.selecting:
+            line, col = pane.screen_to_pos(y, x)
+            pane.sel_cursor = (line, col)
+            pane.update_selection_stats()
+            on_selection_changed()
+        return None
+
+    # Release: copy whatever is highlighted to the system clipboard.
+    if et == MouseEventType.MOUSE_UP:
+        if pane.selecting:
+            line, col = pane.screen_to_pos(y, x)
+            finish_output_selection(
+                pane,
+                on_copy_selection=on_copy_selection,
+                on_selection_changed=on_selection_changed,
+                line=line,
+                col=col,
+            )
+        return None
+
+    return NotImplemented
+
+
+class _ScrollableOutputControl(FormattedTextControl):
+    """FormattedTextControl: wheel scroll + drag-select → copy on mouse-up."""
+
+    def __init__(  # type: ignore[no-untyped-def]
+        self,
+        get_fragments,
+        on_scroll_up,
+        on_scroll_down,
+        pane: _OutputPane,
+        on_selection_changed,
+        on_copy_selection,
+        **kwargs,
+    ) -> None:
         super().__init__(get_fragments, **kwargs)
         self._on_scroll_up = on_scroll_up
         self._on_scroll_down = on_scroll_down
+        self._pane = pane
+        self._on_selection_changed = on_selection_changed
+        self._on_copy_selection = on_copy_selection
 
     def mouse_handler(self, mouse_event: MouseEvent):  # type: ignore[no-untyped-def]
-        if mouse_event.event_type == MouseEventType.SCROLL_UP:
-            self._on_scroll_up()
-            return None
-        if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-            self._on_scroll_down()
-            return None
-        return super().mouse_handler(mouse_event)
+        result = _handle_output_mouse(
+            self._pane,
+            mouse_event,
+            on_scroll_up=self._on_scroll_up,
+            on_scroll_down=self._on_scroll_down,
+            on_selection_changed=self._on_selection_changed,
+            on_copy_selection=self._on_copy_selection,
+        )
+        if result is NotImplemented:
+            return super().mouse_handler(mouse_event)
+        return result
 
 
 class _OutputWindow(Window):
@@ -328,9 +912,41 @@ class _OutputWindow(Window):
     with no jump.
     """
 
-    def __init__(self, pane: _OutputPane, **kwargs) -> None:  # type: ignore[no-untyped-def]
+    def __init__(  # type: ignore[no-untyped-def]
+        self,
+        pane: _OutputPane,
+        on_scroll_up=None,
+        on_scroll_down=None,
+        on_selection_changed=None,
+        on_copy_selection=None,
+        **kwargs,
+    ) -> None:
         super().__init__(**kwargs)
         self._pane = pane
+        self._on_scroll_up = on_scroll_up
+        self._on_scroll_down = on_scroll_down
+        self._on_selection_changed = on_selection_changed
+        self._on_copy_selection = on_copy_selection
+
+    def mouse_handler(self, mouse_event: MouseEvent):  # type: ignore[no-untyped-def]
+        # Handle selection on the Window as well as the control — some hosts
+        # deliver drag/release events here first.
+        if (
+            self._on_scroll_up is not None
+            and self._on_copy_selection is not None
+            and self._on_selection_changed is not None
+        ):
+            result = _handle_output_mouse(
+                self._pane,
+                mouse_event,
+                on_scroll_up=self._on_scroll_up,
+                on_scroll_down=self._on_scroll_down,
+                on_selection_changed=self._on_selection_changed,
+                on_copy_selection=self._on_copy_selection,
+            )
+            if result is not NotImplemented:
+                return result
+        return super().mouse_handler(mouse_event)
 
     def _scroll_when_linewrapping(self, ui_content, width, height):  # type: ignore[no-untyped-def]
         self.horizontal_scroll = 0
@@ -338,6 +954,8 @@ class _OutputWindow(Window):
         total = ui_content.line_count
         if total <= 0 or width <= 0 or height <= 0:
             self.vertical_scroll = 0
+            self._pane.view_top = 0
+            self._pane.view_width = max(1, width)
             return
 
         bottom = min(self._pane.bottom_line(total), total - 1)
@@ -352,15 +970,48 @@ class _OutputWindow(Window):
                 break
             top = lineno
         self.vertical_scroll = top
+        # Expose to mouse hit-testing (drag-select).
+        self._pane.view_top = top
+        self._pane.view_width = max(1, width)
 
 
 class SlashCommandCompleter(Completer):
     """Completion menu for the input box: typing "/" lists every command
     from `ui.commands.SLASH_COMMANDS` (the same source `/help` renders from,
     so the two can't drift apart); typing "/workflow " lists its
-    subcommands from `WORKFLOW_SUBCOMMANDS`. Returns nothing for anything
-    else, so it's invisible while typing a normal prompt.
+    subcommands from `WORKFLOW_SUBCOMMANDS`. `/model ` lists models from the
+    active provider (fetched live, cached briefly). Returns nothing for
+    normal prompts.
     """
+
+    def __init__(self, orchestrator: Orchestrator | None = None) -> None:
+        self.orchestrator = orchestrator
+        # (monotonic_ts, provider_name, models) — avoid hammering the API
+        # while the user types filters character by character.
+        self._model_cache: tuple[float, str, list[str]] | None = None
+        self._model_cache_ttl = 45.0
+
+    def _cached_models(self) -> tuple[str, list[str], str | None]:
+        from reidx.ui.commands import fetch_provider_models
+
+        orch = self.orchestrator
+        if orch is None:
+            return "?", [], "no orchestrator"
+        name = ""
+        if orch.state is not None:
+            name = orch.state.session.provider
+        else:
+            name = orch.config.default_provider
+        now = time.monotonic()
+        if self._model_cache is not None:
+            ts, cached_name, models = self._model_cache
+            if cached_name == name and (now - ts) < self._model_cache_ttl:
+                return name, models, None
+        # Short timeout — completion must not freeze typing on huge catalogs.
+        pname, models, err = fetch_provider_models(orch, name or None, timeout=5)
+        if err is None:
+            self._model_cache = (now, pname, models)
+        return pname, models, err
 
     def get_completions(self, document, complete_event):  # type: ignore[no-untyped-def]
         text = document.text_before_cursor
@@ -387,6 +1038,61 @@ class SlashCommandCompleter(Completer):
                     yield Completion(name, start_position=-len(prefix), display=display, display_meta=desc)
             return
 
+        # /use <name> — registered providers + aliases (nvidia → NVIDIA NIM)
+        if text.startswith("/use "):
+            prefix = text[len("/use ") :]
+            if " " in prefix:
+                return
+            orch = self.orchestrator
+            if orch is None or orch.providers is None:
+                return
+            needle = prefix.lower()
+            names = list(orch.providers.names())
+            # Surface short aliases next to display names when known.
+            try:
+                from reidx.provider_manager.catalog import all_providers
+
+                for pdef in all_providers():
+                    for a in (pdef.id, *pdef.aliases):
+                        if a and a not in names and orch.providers.resolve(a) is not None:
+                            names.append(a)
+            except Exception:  # noqa: BLE001
+                pass
+            for name in sorted(set(names), key=str.lower):
+                if needle and needle not in name.lower():
+                    continue
+                meta = ""
+                resolved = orch.providers.resolve(name)
+                if resolved and resolved != name:
+                    meta = f"→ {resolved}"
+                yield Completion(name, start_position=-len(prefix), display=name, display_meta=meta)
+            return
+
+        # /model <id> — live list from the active provider (NVIDIA NIM, etc.)
+        if text.startswith("/model "):
+            arg = text[len("/model ") :]
+            # Model ids can contain `/` (meta/llama-...) but not spaces.
+            if " " in arg:
+                return
+            _pname, models, err = self._cached_models()
+            if err or not models:
+                return
+            current = ""
+            if self.orchestrator and self.orchestrator.state is not None:
+                current = self.orchestrator.state.session.model or ""
+            needle = arg.lower()
+            for model in models:
+                if needle and needle not in model.lower():
+                    continue
+                meta = "current" if model == current else ""
+                yield Completion(
+                    model,
+                    start_position=-len(arg),
+                    display=model,
+                    display_meta=meta,
+                )
+            return
+
         # Enum-valued commands: "/effort " -> low|medium|high|xhigh, etc. Offers
         # the choice list from ARG_CHOICES as soon as the command + space is
         # typed, so values don't have to be memorized.
@@ -411,6 +1117,43 @@ class SlashCommandCompleter(Completer):
                 yield Completion(f"/{token}", start_position=-len(text), display=display, display_meta=desc)
 
 
+def _completion_wants_trailing_space(text: str) -> bool:
+    """True when accepting this buffer text should append a space so the next
+    completion menu (subcommand / enum args) opens immediately."""
+    if not text or text.endswith(" "):
+        return False
+    if text in ARG_CHOICES or text in ("/goal", "/workflow", "/model", "/use"):
+        return True
+    if text.startswith("/goal "):
+        sub = text[len("/goal ") :]
+        return any(name == sub and args for name, args, _desc in GOAL_SUBCOMMANDS)
+    if text.startswith("/workflow "):
+        sub = text[len("/workflow ") :]
+        return any(name == sub and args for name, args, _desc in WORKFLOW_SUBCOMMANDS)
+    return any(cmd == text and args for cmd, args, _desc, _group in SLASH_COMMANDS)
+
+
+def accept_slash_completion(buf) -> bool:  # type: ignore[no-untyped-def]
+    """Apply the highlighted (or first) "/" completion. Returns True if handled.
+
+    Used by Tab, Right Arrow, and Enter so all three auto-fill the same way
+    for commands, subcommands, and enum options.
+    """
+    if buf.complete_state is None:
+        return False
+    completion = buf.complete_state.current_completion
+    if completion is None:
+        completions = buf.complete_state.completions
+        if not completions:
+            buf.cancel_completion()
+            return True
+        completion = completions[0]
+    buf.apply_completion(completion)
+    if _completion_wants_trailing_space(buf.text):
+        buf.insert_text(" ")
+    return True
+
+
 class ChatApp:
     """Owns the full-screen layout, input handling, and turn dispatch."""
 
@@ -427,12 +1170,15 @@ class ChatApp:
         self._pastes: dict[str, str] = {}
         self._paste_counter = 0
         self._deepreid_running = False
+        # Raw text of the last assistant reply (markdown) — for /copy & Ctrl+Shift+C
+        # even when mouse drag selection is flaky on long wrapped AI output.
+        self._last_assistant_text = ""
 
         self._buf = Buffer(
             history=self._history,
             multiline=False,
             read_only=Condition(lambda: self._approving["flag"]),
-            completer=SlashCommandCompleter(),
+            completer=SlashCommandCompleter(orchestrator),
             complete_while_typing=True,
         )
         self._palette: ProviderPalette | None = None
@@ -453,6 +1199,21 @@ class ChatApp:
         if self.orchestrator.state is None:
             self.orchestrator.start_session(title="interactive")
         self._append_output(render.banner)
+        # Warn clearly when still on offline stub so people don't think chat is broken.
+        st = self.orchestrator.state
+        if st is not None and st.session.provider == "stub":
+            self._append_output(
+                lambda: render.print_warn(
+                    "Offline mode (stub) — not a real AI. "
+                    "Run /connect or /use <provider> (e.g. /use nvidia) to chat for real."
+                )
+            )
+        elif st is not None:
+            self._append_output(
+                lambda: render.print_info(
+                    f"provider: {st.session.provider} · model: {st.session.model or '(default)'}"
+                )
+            )
 
     def _init_palette(self) -> None:
         if self._palette is not None:
@@ -678,13 +1439,63 @@ class ChatApp:
         for entry in result.get("tools", []):
             self.output.append_collapsible(*self._render_tool_call_variants(entry))
 
-        render.print_assistant(result["text"])
-        self.output.append_static(self.capture.drain())
+        # Auto-compact notice (transcript rewrite) — not the footer token meter.
+        compacted = result.get("compacted")
+        if compacted:
+            render.print_info(
+                f"auto-compacted context: {compacted['before']} → {compacted['after']} messages "
+                f"(~{compacted.get('before_tokens', '?')} → ~{compacted.get('after_tokens', '?')} tokens, "
+                f"{compacted.get('method', '?')})"
+            )
+
+        # Soft provider failures (HTTP 404, bad key, network) land here as
+        # result["error"] rather than as a raised exception — keep the session
+        # up and show a single red Error line instead of a traceback dump.
+        assistant_start: int | None = None
+        if result.get("error"):
+            render.print_error(result["text"])
+            self._last_assistant_text = ""
+            self.output.last_assistant_text = ""
+            self.output.last_assistant_range = None
+        else:
+            # Keep the *raw* markdown (not the ANSI-rendered pane text) so
+            # /copy and Ctrl+Y paste cleanly into editors/chat.
+            self._last_assistant_text = result.get("text") or ""
+            self.output.last_assistant_text = self._last_assistant_text
+            # Line range covers only the assistant block (not user / banner / cost).
+            assistant_start = len(self.output.plain_lines())
+            # Drain anything already buffered (compact notice etc.) before the reply.
+            pre = self.capture.drain()
+            if pre:
+                self.output.append_static(pre)
+                assistant_start = len(self.output.plain_lines())
+            render.print_assistant(result["text"])
+            self.output.append_static(self.capture.drain())
+            end = max(assistant_start, len(self.output.plain_lines()) - 1)
+            # Skip trailing blank/pad lines so selection hugs the answer.
+            lines = self.output.plain_lines()
+            while end > assistant_start and not lines[end].rstrip():
+                end -= 1
+            self.output.last_assistant_range = (assistant_start, end)
+
+        cost = result.get("cost")
+        if cost and (cost.get("turn_usd") or cost.get("session_usd")):
+            from reidx.runtime.cost import fmt_usd
+
+            turn = fmt_usd(float(cost.get("turn_usd") or 0))
+            sess = fmt_usd(float(cost.get("session_usd") or 0))
+            tag = "" if cost.get("priced", True) else " (unpriced model)"
+            render.print_info(f"cost {turn} this turn · {sess} session{tag}")
+
+        # Remaining buffered output (cost line, etc.) — after assistant range.
+        tail = self.capture.drain()
+        if tail:
+            self.output.append_static(tail)
 
         if self.app.is_running:
             self.app.invalidate()
 
-    # --- scrolling (mouse wheel only) ---------------------------------------
+    # --- scrolling / selection ----------------------------------------------
 
     def _scroll_up(self) -> None:
         self.output.scroll_up(3)
@@ -693,6 +1504,71 @@ class ChatApp:
     def _scroll_down(self) -> None:
         self.output.scroll_down(3)
         self.app.invalidate()
+
+    def _on_selection_changed(self) -> None:
+        if self.app.is_running:
+            self.app.invalidate()
+
+    def _copy_selection(self, text: str) -> None:
+        """Copy selected transcript text to the system clipboard + show Copied!."""
+        if not text:
+            return
+        text = _clean_selected_text(text) if "\n" in text or text.endswith(" ") else text
+        ok = False
+        try:
+            self.app.clipboard.set_data(ClipboardData(text))
+            ok = True
+        except Exception:  # noqa: BLE001
+            pass
+        if _set_system_clipboard(text):
+            ok = True
+        self.output.update_selection_stats()
+        self.output.sel_copied_lines = self.output.sel_line_count or (
+            text.count("\n") + 1 if text.strip() else 0
+        )
+        self.output.sel_copied_at = time.monotonic()
+        # Keep selection highlight briefly so the user sees what was copied,
+        # then return focus to the input box.
+        try:
+            if self.app.is_running and not (self._palette and self._palette.active):
+                self.app.layout.focus(self._buf)
+        except Exception:  # noqa: BLE001
+            pass
+        if self.app.is_running:
+            self.app.invalidate()
+        if not ok:
+            log.debug("clipboard write may have failed for %s chars", len(text))
+
+    def _copy_last_assistant(self) -> None:
+        """Copy *only* the last AI reply (raw markdown) — never banner/user text."""
+        text = (self._last_assistant_text or self.output.last_assistant_text or "").strip()
+        if not text and self.orchestrator.state is not None:
+            # Fallback: last assistant message in the live transcript.
+            for msg in reversed(self.orchestrator.state.messages):
+                if msg.role == "assistant" and (msg.content or "").strip():
+                    # Skip soft provider-error placeholders.
+                    if msg.content.startswith("[provider error]"):
+                        continue
+                    text = msg.content.strip()
+                    break
+        if not text:
+            self._append_output(
+                lambda: render.print_warn(
+                    "nothing to copy — no assistant reply yet. "
+                    "Wait for a reply, then /copy or Ctrl+Y."
+                )
+            )
+            return
+        # Highlight only the AI block in the pane (not User / banner / cost).
+        if self.output.last_assistant_range is not None:
+            self.output.select_last_assistant()
+        self._copy_selection(text)
+        self.output.sel_copied_lines = text.count("\n") + 1
+        self.output.sel_copied_at = time.monotonic()
+        if self.app.is_running:
+            self.app.invalidate()
+        # Don't append a transcript line here — it would shift ranges and
+        # look like another message. The status-bar "Copied!" chip is enough.
 
     # --- status / spinner content -----------------------------------------
 
@@ -726,8 +1602,11 @@ class ChatApp:
             "mode": st.effective_mode.value,
             "model": st.session.model,
             "effort": st.session.reasoning_effort,
+            "effort_resolved": st.last_effort_resolved,
             "tokens_used": self._estimate_tokens(),
-            "context_window": context_window_for(st.session.model),
+            "context_window": context_window_for(
+                st.session.model, session_window=st.session.context_window
+            ),
             "workspace": str(st.session.workspace),
             "tasks": len(self.orchestrator.list_tasks()),
         }
@@ -743,6 +1622,14 @@ class ChatApp:
             log.exception("status bar render failed")
             return [("#9e9e9e", "  status unavailable")]
 
+    def _format_effort_status(self, status: dict) -> str:
+        """Footer label: effort:auto→low or effort:medium."""
+        effort = status.get("effort") or "—"
+        resolved = status.get("effort_resolved") or ""
+        if effort == "auto" and resolved:
+            return f"effort:auto→{resolved}"
+        return f"effort:{effort}"
+
     def _build_status_fragments(self):  # type: ignore[no-untyped-def]
         status = self._status()
         window = status.get("context_window", 0)
@@ -756,14 +1643,45 @@ class ChatApp:
             ("#ff5f5f bold", f"  {APP_NAME}"), sep,
             (f"{mode_color} bold", mode), sep,
             ("#9e9e9e", status.get("model", "—")), sep,
-            ("#9e9e9e", f"effort:{status.get('effort', '—')}"), sep,
+            ("#9e9e9e", self._format_effort_status(status)), sep,
             ("#9e9e9e", usage), sep,
             ("#9e9e9e", short_path(status.get("workspace", "—"))), sep,
             ("#9e9e9e", f"{status.get('tasks', 0)} tasks"),
         ]
+        # Session spend estimate (from /cost ledger).
+        st = self.orchestrator.state
+        if st is not None and st.costs.total_usd > 0:
+            from reidx.runtime.cost import fmt_usd
+
+            frags += [sep, ("#9e9e9e", fmt_usd(st.costs.total_usd))]
         if not self.output.pinned:
             frags += [sep, ("#ffd75f bold", "scrolled ↑ (scroll down to return)")]
         return frags
+
+    def _selection_status_fragments(self):  # type: ignore[no-untyped-def]
+        """Bottom-right toast: selection size while dragging, then 'Copied!'."""
+        try:
+            copied_ago = (
+                time.monotonic() - self.output.sel_copied_at
+                if self.output.sel_copied_at
+                else 999.0
+            )
+            # Match the product "Copied!" chip after a successful copy.
+            if copied_ago < 2.5:
+                n = self.output.sel_copied_lines or self.output.sel_line_count
+                if n > 0:
+                    unit = "line" if n == 1 else "lines"
+                    return [("#5fd75f bold", f"  {n} {unit} · Copied!  ")]
+                return [("#5fd75f bold", "  Copied!  ")]
+            n = self.output.sel_line_count
+            if n <= 0:
+                return [("", "")]
+            unit = "line" if n == 1 else "lines"
+            if self.output.selecting:
+                return [("#ffd75f bold", f"  {n} {unit}  ")]
+            return [("#ffd75f", f"  {n} {unit}  ")]
+        except Exception:  # noqa: BLE001
+            return [("", "")]
 
     def _spinner_fragments(self):  # type: ignore[no-untyped-def]
         # Same rationale as _status_fragments: this runs every redraw with no
@@ -788,13 +1706,18 @@ class ChatApp:
             self._thinking["last_swap"] = now
         elapsed = int(now - self._thinking["start"])
         star = _STAR_FRAMES[int(now * 6) % len(_STAR_FRAMES)]
+        streaming = bool(self.output.live_stream)
+        label = "streaming" if streaming else self._thinking["gerund"]
+        n_stream = len(self.output.live_stream) if streaming else 0
         frags = [
             ("#ff5f5f", f"  {star} "),
-            ("#ff5f5f", f"{self._thinking['gerund']}… "),
+            ("#ff5f5f", f"{label}… "),
             ("#9e9e9e", f"({elapsed}s"),
             ("#9e9e9e", f" · ↑ {fmt_tokens(self._estimate_tokens())} tokens"),
-            ("#9e9e9e", ")"),
         ]
+        if streaming and n_stream:
+            frags.append(("#9e9e9e", f" · {n_stream} chars"))
+        frags.append(("#9e9e9e", ")"))
         return frags
 
     # --- layout --------------------------------------------------------
@@ -802,13 +1725,23 @@ class ChatApp:
     def _build_layout(self) -> Layout:
         output_window = _OutputWindow(
             self.output,
+            on_scroll_up=self._scroll_up,
+            on_scroll_down=self._scroll_down,
+            on_selection_changed=self._on_selection_changed,
+            on_copy_selection=self._copy_selection,
             content=_ScrollableOutputControl(
                 self.output.get_fragments,
                 on_scroll_up=self._scroll_up,
                 on_scroll_down=self._scroll_down,
-                focusable=False,
+                pane=self.output,
+                on_selection_changed=self._on_selection_changed,
+                on_copy_selection=self._copy_selection,
+                focusable=True,
             ),
             wrap_lines=True,
+            # Don’t let the window steal focus from input unless the user
+            # is actually selecting; still receives mouse for drag-copy.
+            dont_extend_height=False,
         )
         spinner_window = Window(content=FormattedTextControl(self._spinner_fragments), height=1)
 
@@ -821,7 +1754,21 @@ class ChatApp:
         def hline() -> Window:
             return Window(char="─", style=self._box_color, height=1)
 
-        input_window = Window(BufferControl(buffer=self._buf), wrap_lines=False, height=1)
+        # Finalize transcript drag-select if the user releases the mouse over
+        # the input box (common when selecting the last AI lines near the bottom).
+        class _InputWindow(Window):
+            def mouse_handler(inner_self, mouse_event: MouseEvent):  # type: ignore[no-untyped-def]
+                if mouse_event.event_type == MouseEventType.MOUSE_UP and self.output.selecting:
+                    finish_output_selection(
+                        self.output,
+                        on_copy_selection=self._copy_selection,
+                        on_selection_changed=self._on_selection_changed,
+                    )
+                return super(_InputWindow, inner_self).mouse_handler(mouse_event)
+
+        input_window = _InputWindow(
+            content=BufferControl(buffer=self._buf), wrap_lines=False, height=1
+        )
 
         box = HSplit(
             [
@@ -838,7 +1785,18 @@ class ChatApp:
                 VSplit([corner("╰"), hline(), corner("╯")], height=1),
             ]
         )
-        status_window = Window(content=FormattedTextControl(self._status_fragments), height=1)
+        # Status left (session info) + right (selection / Copied! chip).
+        status_window = VSplit(
+            [
+                Window(content=FormattedTextControl(self._status_fragments), height=1),
+                Window(
+                    content=FormattedTextControl(self._selection_status_fragments),
+                    height=1,
+                    width=Dimension(min=12, preferred=22, max=28),
+                ),
+            ],
+            height=1,
+        )
 
         # Subagent panel: appears directly under the input box (pushing it up
         # visually because HSplit re-layouts) whenever there are running or
@@ -991,6 +1949,12 @@ class ChatApp:
         is_approving = Condition(lambda: self._approving["flag"])
         is_buffer_empty = Condition(lambda: not self._buf.text)
         is_palette = Condition(lambda: self._palette is not None and self._palette.active)
+        is_completing = Condition(lambda: self._buf.complete_state is not None)
+        can_edit = Condition(
+            lambda: not self._thinking["flag"]
+            and not self._approving["flag"]
+            and not (self._palette is not None and self._palette.active)
+        )
 
         @kb.add("up", filter=is_palette)
         def _palette_up(event) -> None:  # type: ignore[no-untyped-def]
@@ -1020,18 +1984,30 @@ class ChatApp:
         @kb.add("enter", filter=~is_thinking & ~is_approving & ~is_palette)
         async def _submit(event) -> None:  # type: ignore[no-untyped-def]
             buf = event.current_buffer
-            if buf.complete_state is not None:
-                # A completion menu is open — Enter accepts the highlighted
-                # entry (or just closes the menu if nothing's highlighted
-                # yet), matching every other tool's "/" menu. It does not
-                # submit; that needs a second Enter once the text is filled in.
-                completion = buf.complete_state.current_completion
-                if completion is not None:
-                    buf.apply_completion(completion)
-                else:
-                    buf.cancel_completion()
+            # Menu open → auto-fill highlighted (or first) option; does not
+            # submit. Second Enter runs the completed command.
+            if accept_slash_completion(buf):
                 return
             await self._on_submit()
+
+        # Tab / Right: accept the highlighted "/" completion (commands,
+        # subcommands, and enum options like /effort high). Tab with no menu
+        # open but a slash in the buffer starts the menu with the first item
+        # selected so a second Tab fills it in.
+        @kb.add("tab", filter=can_edit)
+        def _tab_complete(event) -> None:  # type: ignore[no-untyped-def]
+            buf = event.current_buffer
+            if accept_slash_completion(buf):
+                return
+            text = buf.document.text_before_cursor
+            if text.startswith("/"):
+                buf.start_completion(select_first=True)
+
+        @kb.add("right", filter=is_completing & can_edit)
+        def _right_accept_completion(event) -> None:  # type: ignore[no-untyped-def]
+            if not accept_slash_completion(event.current_buffer):
+                # Fallback: move cursor right if somehow nothing to accept.
+                event.current_buffer.cursor_right()
 
         @kb.add("y", filter=is_approving)
         @kb.add("Y", filter=is_approving)
@@ -1053,9 +2029,28 @@ class ChatApp:
                 self._cancel_event.set()
 
         @kb.add("c-c", filter=~is_palette)
-        def _clear_line(event) -> None:  # type: ignore[no-untyped-def]
+        def _copy_or_clear(event) -> None:  # type: ignore[no-untyped-def]
+            # Prefer copy when the transcript has a selection (hover/drag copy UX).
+            if self.output.selecting:
+                finish_output_selection(
+                    self.output,
+                    on_copy_selection=self._copy_selection,
+                    on_selection_changed=self._on_selection_changed,
+                )
+                if self.output.selected_text().strip():
+                    return
+            selected = self.output.selected_text()
+            if selected.strip():
+                self._copy_selection(selected)
+                return
             if self._buf.text:
                 self._buf.reset()
+
+        # Ctrl+Y = yank last AI reply. (Ctrl+Shift+C is not a valid
+        # prompt_toolkit key name and is also stolen by many terminals.)
+        @kb.add("c-y", filter=~is_palette)
+        def _copy_last_reply(event) -> None:  # type: ignore[no-untyped-def]
+            self._copy_last_assistant()
 
         @kb.add("c-d", filter=~is_palette)
         def _exit(event) -> None:  # type: ignore[no-untyped-def]
@@ -1097,11 +2092,13 @@ class ChatApp:
             else:
                 event.current_buffer.insert_text(data)
 
-        @kb.add("left", filter=is_buffer_empty & ~is_thinking & ~is_approving & ~is_palette)
+        # Left/Right on an empty prompt still cycle effort — but Right while
+        # the completion menu is open accepts the selection instead (above).
+        @kb.add("left", filter=is_buffer_empty & ~is_completing & ~is_thinking & ~is_approving & ~is_palette)
         def _effort_prev(event) -> None:  # type: ignore[no-untyped-def]
             self._cycle_effort(-1)
 
-        @kb.add("right", filter=is_buffer_empty & ~is_thinking & ~is_approving & ~is_palette)
+        @kb.add("right", filter=is_buffer_empty & ~is_completing & ~is_thinking & ~is_approving & ~is_palette)
         def _effort_next(event) -> None:  # type: ignore[no-untyped-def]
             self._cycle_effort(1)
 
@@ -1111,11 +2108,12 @@ class ChatApp:
         if self.orchestrator.state is None:
             return
         session = self.orchestrator.state.session
+        levels = _EFFORT_LEVELS  # auto, low, medium, high, xhigh
         try:
-            idx = _EFFORT_LEVELS.index(session.reasoning_effort)
+            idx = levels.index(session.reasoning_effort)
         except ValueError:
-            idx = 0
-        session.reasoning_effort = _EFFORT_LEVELS[(idx + delta) % len(_EFFORT_LEVELS)]
+            idx = levels.index("medium") if "medium" in levels else 0
+        session.reasoning_effort = levels[(idx + delta) % len(levels)]
         self.orchestrator.session_store.update(session)
         self.app.invalidate()
 
@@ -1204,7 +2202,9 @@ class ChatApp:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - the TUI must not die on runtime errors
-            log.exception("deepreid failed")
+            # Never log to the console StreamHandler from the TUI path —
+            # stderr bleeds into the full-screen buffer. UI shows the error once.
+            log.debug("deepreid failed: %s: %s", type(exc).__name__, exc)
             error_text = str(exc)
             self._append_output(lambda: render.print_error(error_text))
         else:
@@ -1227,6 +2227,8 @@ class ChatApp:
                 self.app.exit(result=0)
             elif outcome == "connect":
                 self._activate_palette()
+            elif outcome == "copy-last":
+                self._copy_last_assistant()
             elif outcome.startswith("workflow-run:"):
                 await self._run_workflow(outcome.split(":", 1)[1])
             return
@@ -1236,21 +2238,44 @@ class ChatApp:
         self._thinking["start"] = time.monotonic()
         self._thinking["gerund"] = random.choice(_GERUNDS)
         self._thinking["last_swap"] = self._thinking["start"]
+        self.output.live_stream = ""
         self.app.invalidate()
 
         cancel_event = threading.Event()
         self._cancel_event = cancel_event
         approver = self._make_approver()
         assert self._loop is not None
+
+        def _on_text_delta(chunk: str) -> None:
+            # Worker thread → schedule UI redraw on the asyncio loop.
+            if not chunk:
+                return
+            self.output.live_stream += chunk
+            # Cap live buffer so a runaway stream can't blow memory in the pane.
+            if len(self.output.live_stream) > 200_000:
+                self.output.live_stream = self.output.live_stream[-160_000:]
+            loop = self._loop
+            if loop is not None and self.app.is_running:
+                try:
+                    loop.call_soon_threadsafe(self.app.invalidate)
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
             result = await self._loop.run_in_executor(
                 None,
                 functools.partial(
-                    self.orchestrator.submit_task, text, approver=approver, cancel=cancel_event.is_set
+                    self.orchestrator.submit_task,
+                    text,
+                    approver=approver,
+                    cancel=cancel_event.is_set,
+                    on_text_delta=_on_text_delta,
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - the TUI must not die on runtime errors
-            log.exception("turn failed")
+            # Safety net only — provider failures are soft-caught in Agent.run_turn.
+            # No console log: stderr corrupts the full-screen UI.
+            log.debug("turn failed: %s: %s", type(exc).__name__, exc)
             error_text = str(exc)
             self._append_output(lambda: render.print_error(error_text))
         else:
@@ -1259,6 +2284,7 @@ class ChatApp:
         finally:
             self._thinking["flag"] = False
             self._cancel_event = None
+            self.output.live_stream = ""
             self.app.invalidate()
 
     def _run_slash(self, text: str) -> str:
@@ -1332,14 +2358,23 @@ def run(orchestrator: Orchestrator, initial_prompt: str | None = None) -> int:
     the app starts rendering — the interactive equivalent of typing it into
     the box and pressing Enter, so the session stays open afterward (unlike
     `reid exec`, which runs one prompt headless and exits).
+
+    Wraps the session in `TerminalHostSession` so PowerShell / Windows Terminal
+    colour schemes and prompt themes (Oh My Posh, etc.) are restored on exit.
     """
-    chat = ChatApp(orchestrator, initial_prompt=initial_prompt)
-    original_console = render.console
-    render.console = chat.capture.console
-    try:
-        chat.start()
-        code = asyncio.run(chat.main())
-    finally:
-        render.console = original_console
-    render.console.print(Text("bye.", style="dim"))
-    return code or 0
+    from reidx.ui.terminal_host import TerminalHostSession
+
+    with TerminalHostSession():
+        chat = ChatApp(orchestrator, initial_prompt=initial_prompt)
+        original_console = render.console
+        render.console = chat.capture.console
+        try:
+            chat.start()
+            code = asyncio.run(chat.main())
+        finally:
+            render.console = original_console
+        try:
+            render.console.print(Text("bye.", style="dim"))
+        except Exception:  # noqa: BLE001 - never block exit on a goodbye line
+            pass
+        return code or 0

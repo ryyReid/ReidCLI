@@ -7,7 +7,6 @@ syntax highlighting; tool calls hang under a bullet with their result.
 """
 from __future__ import annotations
 
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from reidx.policy.models import PermissionMode
 from reidx.provider.base import Message
 from reidx.session.models import Session
 from reidx.tasks.models import Task
+from reidx.ui.terminal_host import color_system_for_host
 from reidx.ui.theme import (
     APP_NAME,
     BOX,
@@ -47,16 +47,13 @@ from reidx.ui.theme import (
     short_path,
 )
 
-# The Claude-Code-style glyphs (✻ ⏺ ⎿ › ·) are non-ASCII; a legacy Windows
-# codepage (cp1252) would raise UnicodeEncodeError mid-render. Force UTF-8 so
-# the branding survives regardless of the host console's default encoding.
-for _stream in (sys.stdout, sys.stderr):
-    try:
-        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-    except (AttributeError, ValueError):
-        pass
+# Do NOT permanently reconfigure stdout/stderr here — that sticks the parent
+# PowerShell session on UTF-8 and can break Oh My Posh / profile themes.
+# Encoding is scoped for the TUI lifetime via `TerminalHostSession` in app.run.
 
-console = Console()
+# colour_system="auto" follows the host (Windows Terminal scheme, PowerShell
+# theme). Override with REIDX_COLOR=truecolor|256|16|none or NO_COLOR=1.
+console = Console(color_system=color_system_for_host())
 
 
 # --- Thinking spinner constants (Claude-Code-style: "✻ Gerund… (12s · ↑ 2.1k tokens)") ---
@@ -176,7 +173,9 @@ def status_bar(session: Session | None, mode: PermissionMode, task_count: int = 
                 "model": session.model,
                 "effort": session.reasoning_effort,
                 "tokens_used": tokens_used,
-                "context_window": context_window_for(session.model),
+                "context_window": context_window_for(
+                    session.model, session_window=getattr(session, "context_window", 0) or 0
+                ),
                 "workspace": str(session.workspace),
                 "tasks": task_count,
             }

@@ -26,9 +26,10 @@ from reidx.runtime.orchestrator import Orchestrator
 from reidx.tools import default_registry as tools_registry
 from reidx.ui import render
 from reidx.ui.repl import repl
+from reidx.ui.terminal_host import color_system_for_host
 
 log = get_logger("reidx.app")
-console = Console()
+console = Console(color_system=color_system_for_host())
 
 app = typer.Typer(
     name="reid",
@@ -97,14 +98,24 @@ def _main(
 
 
 def build_orchestrator(config: Config | None = None) -> Orchestrator:
+    # Seed ~/.reidcli/settings.json on first run so npm-global installs work
+    # without a manual copy from the package tree.
+    from reidx.config.settings import ensure_user_settings
+    from reidx.provider.registry import pick_startup_provider
+
+    ensure_user_settings()
     cfg = config or ConfigLoader().load()
     providers = default_registry(cfg)
     root = cfg.storage_root or storage_root()
     load_stored_providers(providers, root)
     load_from_database(providers, root)
-    default_name = cfg.default_provider if providers.has(cfg.default_provider) else "stub"
+    # Prefer a real connected provider over offline stub-v0.
+    default_name = pick_startup_provider(providers, cfg.default_provider)
+    cfg.default_provider = default_name
     provider = providers.get(default_name)
-    return Orchestrator(cfg, provider, tools_registry(), providers=providers)
+    return Orchestrator(
+        cfg, provider, tools_registry(), providers=providers, provider_name=default_name
+    )
 
 
 @app.command()
@@ -199,9 +210,14 @@ def doctor() -> None:
     orch = build_orchestrator(cfg)
     from reidx.config.settings import settings_path
 
+    from reidx.config.settings import ensure_user_settings, global_settings_path
+
     sp = settings_path()
+    user_sp = ensure_user_settings()
     console.print(f"[bold]reid[/] {__version__}")
     console.print(f"settings  {sp} ({'found' if sp.exists() else 'missing'})")
+    if sp.resolve() != user_sp.resolve():
+        console.print(f"user cfg  {user_sp} (global; used when no project settings.json)")
     console.print(f"python    {sys.executable} ({sys.version.split()[0]})")
     console.print(f"workspace {cfg.workspace_root}")
     console.print(f"storage   {cfg.storage_root}")
@@ -211,8 +227,11 @@ def doctor() -> None:
     import os
 
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    has_openai = bool(os.environ.get("OPENAI_API_KEY", "").strip())
     console.print(f"anthropic {'configured' if has_key else 'not configured'} (env: ANTHROPIC_API_KEY)")
+    console.print(f"openai    {'configured' if has_openai else 'not configured'} (env: OPENAI_API_KEY)")
     console.print("[green]ok[/] runtime importable; provider available")
+    console.print(f"[dim]tip[/] edit {user_sp} or run /connect inside reid")
 
 
 @app.command()
