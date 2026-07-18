@@ -1,27 +1,33 @@
 """OAuth integration for provider authentication.
 
-Follows opencode patterns for browser and device authorization flows.
-Supports OpenAI, Anthropic, and other OAuth-enabled providers.
+Browser (authorization code + PKCE) and device authorization flows.
+
+HTTP goes through `reidx.provider._http`, which carries the project's shared
+SSL context and error handling — no extra HTTP client dependency.
+
+Token persistence is the caller's job: `run_browser_oauth` / `run_device_oauth`
+return the tokens, and the provider database stores them.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
-import os
 import secrets
 import time
-import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import httpx
-
 from reidx.diagnostics.logger import get_logger
+from reidx.provider._http import post_form, post_json
+from reidx.provider.base import ProviderError
+from reidx.provider_manager.database import OAuthTokens
 
 log = get_logger("reidx.provider.oauth")
+
+_OAUTH_TIMEOUT = 30
 
 
 @dataclass
@@ -32,49 +38,15 @@ class OAuthConfig:
     authorize_endpoint: str
     token_endpoint: str
     device_endpoint: str = ""
-    scopes: list[str] = None
+    scopes: list[str] | None = None
     callback_port: int = 1455
     redirect_uri: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.scopes is None:
             self.scopes = ["openid", "profile", "email", "offline_access"]
         if not self.redirect_uri:
             self.redirect_uri = f"http://localhost:{self.callback_port}/auth/callback"
-
-
-@dataclass
-class OAuthTokens:
-    access_token: str
-    refresh_token: str
-    id_token: str = ""
-    expires_at: float = 0
-    scope: str = ""
-    token_type: str = "Bearer"
-
-    def is_expired(self, buffer_seconds: int = 300) -> bool:
-        return self.expires_at - time.time() < buffer_seconds
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "access_token": self.access_token,
-            "refresh_token": self.refresh_token,
-            "id_token": self.id_token,
-            "expires_at": self.expires_at,
-            "scope": self.scope,
-            "token_type": self.token_type,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> OAuthTokens:
-        return cls(
-            access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
-            id_token=data.get("id_token", ""),
-            expires_at=data.get("expires_at", 0),
-            scope=data.get("scope", ""),
-            token_type=data.get("token_type", "Bearer"),
-        )
 
 
 @dataclass
@@ -99,24 +71,6 @@ class OAuthProvider:
         callback_port=1455,
     )
 
-    ANTHROPIC = OAuthConfig(
-        client_id="",
-        client_secret="",
-        issuer="https://console.anthropic.com",
-        authorize_endpoint="/oauth/authorize",
-        token_endpoint="/oauth/token",
-        scopes=["openid", "profile", "email"],
-    )
-
-    GOOGLE = OAuthConfig(
-        client_id="",
-        client_secret="",
-        issuer="https://accounts.google.com",
-        authorize_endpoint="/o/oauth2/v2/auth",
-        token_endpoint="/o/oauth2/v2/token",
-        scopes=["openid", "profile", "email"],
-    )
-
 
 class PKCE:
     @staticmethod
@@ -129,48 +83,53 @@ class PKCE:
 
 
 class LocalCallbackServer:
-    def __init__(self, port: int, handler: Callable[[dict], None]):
+    """Single-shot loopback listener for the OAuth redirect.
+
+    `expected_state` is compared against the `state` the provider echoes back;
+    a mismatch is rejected rather than exchanged (CSRF / code injection).
+    """
+
+    def __init__(self, port: int, expected_state: str, handler: Callable[[dict], None]):
         self.port = port
+        self.expected_state = expected_state
         self.handler = handler
-        self.server: Optional[HTTPServer] = None
-        self.thread: Optional[Thread] = None
-        self._code: Optional[str] = None
-        self._error: Optional[str] = None
+        self.server: HTTPServer | None = None
+        self.thread: Thread | None = None
+        self._code: str | None = None
+        self._error: str | None = None
 
     def start(self) -> None:
-        class CallbackHandler(BaseHTTPRequestHandler):
-            def do_GET(inner_self):
-                parsed = urlparse(inner_self.path)
-                params = parse_qs(parsed.query)
-                if "code" in params:
-                    self._code = params["code"][0]
-                    inner_self.send_response(200)
-                    inner_self.send_header("Content-Type", "text/html")
-                    inner_self.end_headers()
-                    inner_self.wfile.write(b"""
-                        <html><body>
-                        <h2>Authorization successful!</h2>
-                        <p>You can close this window.</p>
-                        <script>window.close();</script>
-                        </body></html>
-                    """)
-                elif "error" in params:
-                    self._error = params.get("error_description", [params["error"][0]])[0]
-                    inner_self.send_response(400)
-                    inner_self.send_header("Content-Type", "text/html")
-                    inner_self.end_headers()
-                    inner_self.wfile.write(f"""
-                        <html><body>
-                        <h2>Authorization failed</h2>
-                        <p>{self._error}</p>
-                        </body></html>
-                    """.encode())
-                else:
-                    inner_self.send_response(400)
-                    inner_self.end_headers()
-                self.handler(params)
+        outer = self
 
-            def log_message(inner_self, format, *args):
+        class CallbackHandler(BaseHTTPRequestHandler):
+            def _reply(inner_self, status: int, title: str, body: str) -> None:
+                inner_self.send_response(status)
+                inner_self.send_header("Content-Type", "text/html; charset=utf-8")
+                inner_self.end_headers()
+                inner_self.wfile.write(
+                    f"<html><body><h2>{title}</h2><p>{body}</p></body></html>".encode()
+                )
+
+            def do_GET(inner_self) -> None:
+                params = parse_qs(urlparse(inner_self.path).query)
+                if "code" in params:
+                    state = (params.get("state") or [""])[0]
+                    if not secrets.compare_digest(state, outer.expected_state):
+                        outer._error = "state mismatch — possible CSRF, authorization rejected"
+                        inner_self._reply(400, "Authorization failed", outer._error)
+                    else:
+                        outer._code = params["code"][0]
+                        inner_self._reply(
+                            200, "Authorization successful!", "You can close this window."
+                        )
+                elif "error" in params:
+                    outer._error = params.get("error_description", [params["error"][0]])[0]
+                    inner_self._reply(400, "Authorization failed", outer._error)
+                else:
+                    inner_self._reply(400, "Authorization failed", "Missing code.")
+                outer.handler(params)
+
+            def log_message(inner_self, format, *args) -> None:
                 pass
 
         self.server = HTTPServer(("localhost", self.port), CallbackHandler)
@@ -184,7 +143,7 @@ class LocalCallbackServer:
         if self.thread:
             self.thread.join(timeout=1)
 
-    def wait_for_callback(self, timeout: int = 120) -> tuple[Optional[str], Optional[str]]:
+    def wait_for_callback(self, timeout: int = 120) -> tuple[str | None, str | None]:
         start = time.time()
         while time.time() - start < timeout:
             if self._code or self._error:
@@ -206,7 +165,7 @@ class OAuthClient:
             "response_type": "code",
             "client_id": self.config.client_id,
             "redirect_uri": self.config.redirect_uri,
-            "scope": " ".join(self.config.scopes),
+            "scope": " ".join(self.config.scopes or []),
             "state": state,
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
@@ -215,6 +174,16 @@ class OAuthClient:
             params["codex_cli_simplified_flow"] = "true"
             params["originator"] = "opencode"
         return f"{self._get_issuer_url(self.config.authorize_endpoint)}?{urlencode(params)}"
+
+    def _tokens_from_payload(self, data: dict, fallback_refresh: str = "") -> OAuthTokens:
+        return OAuthTokens(
+            access_token=data.get("access_token", ""),
+            refresh_token=data.get("refresh_token", fallback_refresh),
+            id_token=data.get("id_token", ""),
+            expires_at=time.time() + data.get("expires_in", 3600),
+            scope=data.get("scope", ""),
+            token_type=data.get("token_type", "Bearer"),
+        )
 
     def exchange_code(self, code: str, code_verifier: str, redirect_uri: str) -> OAuthTokens:
         data = {
@@ -226,24 +195,10 @@ class OAuthClient:
         }
         if self.config.client_secret:
             data["client_secret"] = self.config.client_secret
-
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                self._get_issuer_url(self.config.token_endpoint),
-                data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            token_data = resp.json()
-
-        return OAuthTokens(
-            access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token", ""),
-            id_token=token_data.get("id_token", ""),
-            expires_at=time.time() + token_data.get("expires_in", 3600),
-            scope=token_data.get("scope", ""),
-            token_type=token_data.get("token_type", "Bearer"),
+        payload = post_form(
+            self._get_issuer_url(self.config.token_endpoint), data, timeout=_OAUTH_TIMEOUT
         )
+        return self._tokens_from_payload(payload)
 
     def refresh_tokens(self, refresh_token: str) -> OAuthTokens:
         data = {
@@ -253,93 +208,51 @@ class OAuthClient:
         }
         if self.config.client_secret:
             data["client_secret"] = self.config.client_secret
-
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                self._get_issuer_url(self.config.token_endpoint),
-                data=data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            )
-            resp.raise_for_status()
-            token_data = resp.json()
-
-        return OAuthTokens(
-            access_token=token_data["access_token"],
-            refresh_token=token_data.get("refresh_token", refresh_token),
-            id_token=token_data.get("id_token", ""),
-            expires_at=time.time() + token_data.get("expires_in", 3600),
-            scope=token_data.get("scope", ""),
-            token_type=token_data.get("token_type", "Bearer"),
+        payload = post_form(
+            self._get_issuer_url(self.config.token_endpoint), data, timeout=_OAUTH_TIMEOUT
         )
+        return self._tokens_from_payload(payload, fallback_refresh=refresh_token)
 
     def start_device_auth(self) -> DeviceAuthResponse:
         if not self.config.device_endpoint:
             raise ValueError("Device authorization not supported for this provider")
-
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                self._get_issuer_url(self.config.device_endpoint),
-                json={"client_id": self.config.client_id},
-                headers={"Content-Type": "application/json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
+        data = post_json(
+            self._get_issuer_url(self.config.device_endpoint),
+            {"client_id": self.config.client_id},
+            headers={},
+            timeout=_OAUTH_TIMEOUT,
+        )
+        interval = int(data.get("interval", 5))
         return DeviceAuthResponse(
             device_code=data["device_auth_id"],
             user_code=data["user_code"],
             verification_uri=f"{self.config.issuer}/codex/device",
-            verification_uri_complete=f"{self.config.issuer}/codex/device?user_code={data['user_code']}",
-            expires_in=int(data.get("interval", 5)) * 600,
-            interval=int(data.get("interval", 5)),
+            verification_uri_complete=(
+                f"{self.config.issuer}/codex/device?user_code={data['user_code']}"
+            ),
+            expires_in=int(data.get("expires_in", 900)),
+            interval=interval,
         )
 
-    def poll_device_token(self, device_code: str) -> Optional[OAuthTokens]:
+    def poll_device_token(self, device_code: str) -> OAuthTokens | None:
+        """One poll. None means "not authorized yet" — the caller keeps waiting."""
         if not self.config.device_endpoint:
             return None
-
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                f"{self.config.issuer}/api/accounts/deviceauth/token",
-                json={
-                    "device_auth_id": device_code,
-                    "client_id": self.config.client_id,
-                },
-                headers={"Content-Type": "application/json"},
-            )
-            if resp.status_code == 403 or resp.status_code == 404:
-                return None
-            if not resp.is_success:
-                return None
-            data = resp.json()
-
-        return OAuthTokens(
-            access_token=data.get("access_token", ""),
-            refresh_token=data.get("refresh_token", ""),
-            id_token=data.get("id_token", ""),
-            expires_at=time.time() + data.get("expires_in", 3600),
-            scope=data.get("scope", ""),
-            token_type=data.get("token_type", "Bearer"),
-        )
-
-    def save_tokens(self, tokens: OAuthTokens) -> None:
-        from reidx.provider_manager.keychain import encrypt
-        encrypted = encrypt(str(tokens.to_dict()))
-        os.environ[f"REIDX_OAUTH_{self.storage_key}"] = encrypted
-
-    def load_tokens(self) -> Optional[OAuthTokens]:
-        from reidx.provider_manager.keychain import decrypt
-        encrypted = os.environ.get(f"REIDX_OAUTH_{self.storage_key}")
-        if not encrypted:
-            return None
         try:
-            data = eval(decrypt(encrypted))
-            return OAuthTokens.from_dict(data)
-        except Exception:
+            data = post_json(
+                f"{self.config.issuer}/api/accounts/deviceauth/token",
+                {"device_auth_id": device_code, "client_id": self.config.client_id},
+                headers={},
+                timeout=_OAUTH_TIMEOUT,
+            )
+        except ProviderError:
             return None
+        tokens = self._tokens_from_payload(data)
+        # A 200 with no token means the user has not approved yet.
+        return tokens if tokens.access_token else None
 
 
-def create_oauth_client(provider_kind: str) -> Optional[OAuthClient]:
+def create_oauth_client(provider_kind: str) -> OAuthClient | None:
     configs = {
         "openai": (OAuthProvider.OPEN_AI, "OPENAI"),
     }
@@ -349,51 +262,75 @@ def create_oauth_client(provider_kind: str) -> Optional[OAuthClient]:
     return OAuthClient(config, key)
 
 
-def run_browser_oauth(provider_kind: str) -> Optional[OAuthTokens]:
+def oauth_supported(provider_kind: str) -> bool:
+    """Whether `provider_kind` has a usable OAuth client registered."""
+    return create_oauth_client(provider_kind) is not None
+
+
+def run_browser_oauth(provider_kind: str) -> OAuthTokens | None:
     client = create_oauth_client(provider_kind)
     if not client:
+        log.error("OAuth is not configured for provider kind %r", provider_kind)
         return None
 
     state = secrets.token_urlsafe(32)
     verifier, challenge = PKCE.generate()
 
-    server = LocalCallbackServer(client.config.callback_port, lambda _: None)
-    server.start()
+    server = LocalCallbackServer(client.config.callback_port, state, lambda _: None)
+    try:
+        server.start()
+    except OSError as exc:
+        log.error("Cannot listen on port %s for OAuth callback: %s", client.config.callback_port, exc)
+        return None
 
     try:
         auth_url = client.build_authorize_url(state, challenge)
-        log.info("Opening browser for %s authorization: %s", provider_kind, auth_url)
+        log.info("Opening browser for %s authorization", provider_kind)
 
         import webbrowser
+
         webbrowser.open(auth_url)
 
         code, error = server.wait_for_callback(120)
-        if error:
-            log.error("OAuth authorization failed: %s", error)
+        if error or not code:
+            log.error("OAuth authorization failed: %s", error or "no authorization code")
             return None
 
-        tokens = client.exchange_code(code, verifier, client.config.redirect_uri)
-        client.save_tokens(tokens)
+        try:
+            tokens = client.exchange_code(code, verifier, client.config.redirect_uri)
+        except ProviderError as exc:
+            log.error("OAuth token exchange failed: %s", exc)
+            return None
+        if not tokens.access_token:
+            log.error("OAuth token exchange returned no access token")
+            return None
         return tokens
-
     finally:
         server.stop()
 
 
-def run_device_oauth(provider_kind: str, on_user_code: Callable[[str, str], None]) -> Optional[OAuthTokens]:
+def run_device_oauth(
+    provider_kind: str, on_user_code: Callable[[str, str], None]
+) -> OAuthTokens | None:
     client = create_oauth_client(provider_kind)
     if not client or not client.config.device_endpoint:
+        log.error("Device OAuth is not configured for provider kind %r", provider_kind)
         return None
 
-    device_auth = client.start_device_auth()
+    try:
+        device_auth = client.start_device_auth()
+    except (ProviderError, ValueError, KeyError) as exc:
+        log.error("Device authorization request failed: %s", exc)
+        return None
+
     on_user_code(device_auth.user_code, device_auth.verification_uri_complete)
 
     deadline = time.time() + device_auth.expires_in
     while time.time() < deadline:
         tokens = client.poll_device_token(device_auth.device_code)
         if tokens:
-            client.save_tokens(tokens)
             return tokens
         time.sleep(device_auth.interval)
 
+    log.error("Device authorization timed out")
     return None

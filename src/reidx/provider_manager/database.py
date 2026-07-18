@@ -6,7 +6,6 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from reidx.diagnostics.logger import get_logger
 from reidx.provider_manager import keychain
@@ -62,12 +61,12 @@ class OAuthTokens:
         )
 
     def encrypt(self) -> str:
-        return keychain.encrypt(str(self.to_dict()))
+        return keychain.encrypt(json.dumps(self.to_dict()))
 
     @classmethod
     def decrypt(cls, encrypted: str) -> OAuthTokens:
         try:
-            data = eval(keychain.decrypt(encrypted))
+            data = json.loads(keychain.decrypt(encrypted))
             return cls.from_dict(data)
         except Exception:
             return cls()
@@ -84,7 +83,7 @@ class StoredProvider:
     catalog_id: str | None = None
     keys: list[StoredKey] = field(default_factory=list)
     active_key_id: str | None = None
-    oauth_tokens: Optional[OAuthTokens] = None
+    oauth_tokens: OAuthTokens | None = None
 
     def active_key(self) -> StoredKey | None:
         if not self.active_key_id:
@@ -183,12 +182,19 @@ class ProviderDatabase:
         ) for k in entry.get("keys", [])]
         
         oauth_tokens = None
-        oauth_data = entry.get("oauth_tokens")
-        if oauth_data:
-            try:
-                oauth_tokens = OAuthTokens.from_dict(oauth_data)
-            except Exception:
-                pass
+        enc = entry.get("oauth_tokens_enc")
+        if enc:
+            tokens = OAuthTokens.decrypt(enc)
+            if tokens.access_token or tokens.refresh_token:
+                oauth_tokens = tokens
+        else:
+            # Back-compat: earlier builds wrote plaintext under "oauth_tokens".
+            oauth_data = entry.get("oauth_tokens")
+            if oauth_data:
+                try:
+                    oauth_tokens = OAuthTokens.from_dict(oauth_data)
+                except Exception:
+                    pass
 
         return StoredProvider(
             name=entry.get("name", ""),
@@ -216,7 +222,7 @@ class ProviderDatabase:
             "active_key_id": p.active_key_id,
         }
         if p.oauth_tokens:
-            result["oauth_tokens"] = p.oauth_tokens.to_dict()
+            result["oauth_tokens_enc"] = p.oauth_tokens.encrypt()
         return result
 
     def list_providers(self) -> list[StoredProvider]:

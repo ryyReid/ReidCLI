@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 from reidx.diagnostics.logger import get_logger
 from reidx.provider.anthropic import AnthropicProvider
@@ -242,11 +241,12 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             log.debug("replaced registry entry for %s with providers.db record", sp.name)
 
         api_key = sp.decrypted_api_key()
-        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, 'decrypted_oauth_access_token') else ""
-        oauth_refresh = sp.decrypted_oauth_refresh_token() if hasattr(sp, 'decrypted_oauth_refresh_token') else ""
-        oauth_expires = getattr(sp, 'oauth_expires_at', 0)
-        oauth_provider = getattr(sp, 'oauth_provider', "")
-        
+        oauth = getattr(sp, "oauth_tokens", None)
+        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, "decrypted_oauth_access_token") else ""
+        oauth_refresh = oauth.refresh_token if oauth else ""
+        oauth_expires = int(oauth.expires_at) if oauth else 0
+        oauth_provider = sp.kind if oauth_access else ""
+
         if not api_key and not oauth_access and sp.kind not in ("ollama",):
             log.warning(
                 "provider %s in providers.db has no decryptable API key or OAuth token — "

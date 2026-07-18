@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,7 +23,6 @@ from reidx.provider_manager.catalog import (
     search as catalog_search,
 )
 from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
-from reidx.provider.oauth import run_browser_oauth, run_device_oauth
 
 log = get_logger("reidx.provider_manager.palette")
 
@@ -42,6 +42,31 @@ BG_ROW = "#181616"
 SCROLL_IND = "#2a2a2a"
 HEADER_BG = "#1a1010"
 ITEM_FG = "#d0d0d0"
+
+# --- animation ----------------------------------------------------------
+# Transitions are event-triggered and self-terminating: each sets a start
+# timestamp, renders an eased interpolation over its window, then stops
+# requesting redraws. Nothing animates while the palette sits idle.
+_ANIM_OPEN = 0.22   # seconds — rows unfold top-to-bottom when the box opens
+_ANIM_SEL = 0.16    # seconds — selected row "settles" from a brighter tint
+SEL_BG_POP = "#4a2530"  # brighter selected-row bg that eases down to SEL_BG
+
+
+def _ease_out_cubic(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return 1 - (1 - t) ** 3
+
+
+def _lerp_hex(a: str, b: str, t: float) -> str:
+    """Interpolate between two "#rrggbb" colors; t in [0, 1]."""
+    t = max(0.0, min(1.0, t))
+    ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+    br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+    return (
+        f"#{round(ar + (br - ar) * t):02x}"
+        f"{round(ag + (bg - ag) * t):02x}"
+        f"{round(ab + (bb - ab) * t):02x}"
+    )
 
 
 @dataclass
@@ -133,6 +158,10 @@ class ProviderPalette:
         self.input_is_password = False
         self.input_prompt_text = ""
 
+        # Animation clocks (monotonic seconds; 0.0 == long finished).
+        self._anim_open_at = 0.0
+        self._anim_sel_at = 0.0
+
         self.search_buf = Buffer(multiline=False)
         self.input_buf = Buffer(multiline=False)
         self.search_buf.on_text_changed += self._on_search_changed
@@ -183,7 +212,26 @@ class ProviderPalette:
         self.search_buf.text = ""
         self.current_provider = None
         self.current_def = None
+        self._anim_open_at = time.monotonic()
+        self._anim_sel_at = 0.0
         self._invalidate()
+
+    def is_animating(self) -> bool:
+        """True while a transition is mid-flight — drives the redraw ticker.
+
+        Returns False once every window has elapsed so the UI stops
+        repainting when nothing is moving.
+        """
+        if not self._active:
+            return False
+        now = time.monotonic()
+        return (
+            now - self._anim_open_at < _ANIM_OPEN
+            or now - self._anim_sel_at < _ANIM_SEL
+        )
+
+    def _mark_selection_moved(self) -> None:
+        self._anim_sel_at = time.monotonic()
 
     def deactivate(self) -> None:
         self._active = False
@@ -270,6 +318,7 @@ class ProviderPalette:
         if items:
             self.selected_index = (self.selected_index - 1) % len(items)
             self._adjust_scroll(len(items))
+            self._mark_selection_moved()
             self._invalidate()
 
     def on_down(self) -> None:
@@ -277,6 +326,7 @@ class ProviderPalette:
         if items:
             self.selected_index = (self.selected_index + 1) % len(items)
             self._adjust_scroll(len(items))
+            self._mark_selection_moved()
             self._invalidate()
 
     def on_enter(self) -> None:
@@ -984,11 +1034,31 @@ class ProviderPalette:
         self._adjust_scroll(len(items))
         visible_start = self._scroll_offset
         visible_end = min(visible_start + max_lines, len(items))
+        visible_count = visible_end - visible_start
+
+        now = time.monotonic()
+        # Open unfold: reveal rows top-to-bottom over _ANIM_OPEN.
+        revealed = visible_count
+        if self._anim_open_at and now - self._anim_open_at < _ANIM_OPEN:
+            reveal = _ease_out_cubic((now - self._anim_open_at) / _ANIM_OPEN)
+            revealed = max(1, min(visible_count, round(reveal * visible_count)))
+        # Selection settle: selected row bg eases down from a brighter tint.
+        sel_bg = SEL_BG
+        if self._anim_sel_at and now - self._anim_sel_at < _ANIM_SEL:
+            ts = _ease_out_cubic((now - self._anim_sel_at) / _ANIM_SEL)
+            sel_bg = _lerp_hex(SEL_BG_POP, SEL_BG, ts)
+
         frags: list[tuple[str, str]] = []
         for i in range(visible_start, visible_end):
+            # Rows past the unfold frontier render blank until they reveal.
+            if i - visible_start >= revealed:
+                frags.append((f"bg:{BG}", " " * inner))
+                if i != visible_end - 1:
+                    frags.append((f"bg:{BG}", "\n"))
+                continue
             item = items[i]
             is_sel = i == self.selected_index
-            row_bg = SEL_BG if is_sel else (BG_ALT if i % 2 else BG_ROW)
+            row_bg = sel_bg if is_sel else (BG_ALT if i % 2 else BG_ROW)
             label_part = f"  {item.icon}  {item.label}"
             desc = item.description
             remaining = max(1, inner - len(label_part) - 1)
