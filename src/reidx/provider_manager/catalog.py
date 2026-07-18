@@ -179,31 +179,23 @@ ProviderDefinition(
         kind="openai-compatible", base_url="https://integrate.api.nvidia.com/v1",
         default_model="meta/llama-3.1-70b-instruct", aliases=["nvidia"], icon="NVD",
     ),
-    # OpenCode Go (https://opencode.ai/go) — Zen subscription, OpenAI-compatible
-    # chat/completions for GLM/Kimi/DeepSeek/MiMo. MiniMax/Qwen use the
-    # Anthropic Messages endpoint — see opencode-go-anthropic below.
+    # OpenCode Go (https://opencode.ai/go) — Zen subscription. One entry that
+    # auto-routes per model: GLM/Kimi/DeepSeek/MiMo over OpenAI-compatible
+    # chat/completions, MiniMax/Qwen over the Anthropic Messages endpoint.
+    # See reidx.provider.opencode_go.OpenCodeGoProvider.
     ProviderDefinition(
         id="opencode-go",
         name="OpenCode Go",
-        description="OpenCode Zen Go subscription — GLM, Kimi, DeepSeek, MiMo (OpenAI-compatible)",
-        kind="openai-compatible",
+        description="OpenCode Zen Go — GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen (auto-routed)",
+        kind="opencode-go",
         base_url="https://opencode.ai/zen/go/v1",
         default_model="glm-5.2",
-        aliases=["opencode", "opencode-go", "zen-go", "go", "opencodigo"],
+        aliases=[
+            "opencode", "opencode-go", "zen-go", "go", "opencodigo",
+            "opencode-go-ant", "zen-go-anthropic", "opencode-anthropic",
+        ],
         popular=True,
         icon="OCG",
-    ),
-    ProviderDefinition(
-        id="opencode-go-anthropic",
-        name="OpenCode Go (Anthropic)",
-        description="OpenCode Go MiniMax / Qwen models via Anthropic Messages API",
-        kind="anthropic",
-        base_url="https://opencode.ai/zen/go",
-        default_model="qwen3.7-plus",
-        aliases=["opencode-go-ant", "zen-go-anthropic", "opencode-anthropic"],
-        auth_method="x-api-key",
-        popular=False,
-        icon="OCA",
     ),
     ProviderDefinition(
         id="ai21", name="AI21 Labs", description="Jamba models with long context windows",

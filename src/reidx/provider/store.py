@@ -81,6 +81,14 @@ def build_provider(record: ProviderRecord) -> BaseProvider:
             default_model=record.default_model,
             api_key=api_key,
         )
+    if kind == "opencode-go":
+        from reidx.provider.opencode_go import DEFAULT_BASE_URL, OpenCodeGoProvider
+
+        return OpenCodeGoProvider(
+            api_key=api_key,
+            base_url=record.base_url or DEFAULT_BASE_URL,
+            default_model=record.default_model,
+        )
     raise ValueError(f"unsupported provider kind: {kind}")
 
 

@@ -172,12 +172,16 @@ reid
 
 Or `/connect` → **OpenCode Go** → paste key.
 
-| Catalog entry | Kind | Base URL | Example models |
-|---|---|---|---|
-| **OpenCode Go** | openai-compatible | `https://opencode.ai/zen/go/v1` | `glm-5.2`, `kimi-k2.7-code`, `deepseek-v4-flash`, `mimo-v2.5` |
-| **OpenCode Go (Anthropic)** | anthropic | `https://opencode.ai/zen/go` | `qwen3.7-plus`, `minimax-m2.7` |
+A **single** catalog entry (`kind: opencode-go`) that auto-routes each request
+by model: GLM/Kimi/DeepSeek/MiMo go over the OpenAI-compatible endpoint,
+MiniMax/Qwen over the Anthropic Messages endpoint — one key, one entry.
 
-Aliases: `opencode`, `opencode-go`, `zen-go`, `go`.
+| Catalog entry | Base origin | Routed backend | Example models |
+|---|---|---|---|
+| **OpenCode Go** | `https://opencode.ai/zen/go/v1` | OpenAI-compatible | `glm-5.2`, `kimi-k2.7-code`, `deepseek-v4-flash`, `mimo-v2.5` |
+| **OpenCode Go** | `https://opencode.ai/zen/go/v1` | Anthropic Messages | `qwen3.7-plus`, `minimax-m2.7` |
+
+Aliases: `opencode`, `opencode-go`, `zen-go`, `go`, `opencode-anthropic`, `zen-go-anthropic`.
 
 HTTP clients send a normal **User-Agent** so Cloudflare does not block stdlib
 `urllib` (403 HTML / error 1010).
