@@ -54,13 +54,16 @@ class ProviderRecord:
 def build_provider(record: ProviderRecord) -> BaseProvider:
     kind = record.kind
     api_key = record.api_key
-    if record.oauth_access_token and record.oauth_provider in ("openai", "anthropic"):
+    using_oauth = bool(record.oauth_access_token and record.oauth_provider in ("openai", "anthropic"))
+    if using_oauth:
         api_key = record.oauth_access_token
     if kind == "anthropic":
         return AnthropicProvider(
             api_key=api_key,
             base_url=record.base_url or "https://api.anthropic.com",
             default_model=record.default_model,
+            # Claude OAuth tokens are Bearer + beta-header, not x-api-key.
+            auth_style="oauth" if using_oauth and record.oauth_provider == "anthropic" else "x-api-key",
         )
     if kind == "openai":
         return OpenAIProvider(

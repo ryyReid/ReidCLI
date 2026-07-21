@@ -158,6 +158,20 @@ exit). Output fills the **live terminal width**; the footer stays one compact li
 | `openai-compatible` | NIM, Groq, xAI, **OpenCode Go**, vLLM, LM Studio, … + streaming |
 | `ollama` | Local Ollama |
 
+### Sign in with your subscription (OAuth)
+
+`/connect` lists two OAuth shortcuts at the top — sign in with your existing
+plan instead of pasting an API key:
+
+| Entry | Flow | Notes |
+|---|---|---|
+| **Sign in with Claude (OAuth)** | Browser → **paste code** | Opens `claude.ai`; copy the code from the hosted callback page back into the palette. Token used as `Authorization: Bearer` + `anthropic-beta`. |
+| **Sign in with Codex (OAuth)** | Browser → auto-caught | Opens `auth.openai.com`; a local server on `:1455` catches the redirect. Device-code flow also available for headless. |
+
+Tokens are stored **encrypted** in `providers.db`. OAuth access tokens are
+short-lived; re-run `/connect` if a session expires (auto-refresh on load is
+planned).
+
 ### OpenCode Go
 
 [OpenCode Go](https://opencode.ai/go) — Zen subscription for open coding models.

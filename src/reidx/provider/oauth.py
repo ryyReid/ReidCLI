@@ -41,6 +41,19 @@ class OAuthConfig:
     scopes: list[str] | None = None
     callback_port: int = 1455
     redirect_uri: str = ""
+    # "form" (application/x-www-form-urlencoded, OpenAI/Codex) or "json"
+    # (application/json, Anthropic) for the token endpoint body.
+    token_style: str = "form"
+    # True when the provider redirects to a hosted callback page and the user
+    # must copy the returned code back in (Anthropic) rather than a loopback
+    # server catching it automatically (OpenAI/Codex).
+    manual: bool = False
+    # Extra static query params on the authorize URL (Anthropic: code=true).
+    authorize_params: dict[str, str] | None = None
+    # Anthropic uses the PKCE verifier as the `state` value...
+    state_is_verifier: bool = False
+    # ...and echoes it back as `code#state`, which must be sent in the token body.
+    send_state_in_token: bool = False
 
     def __post_init__(self) -> None:
         if self.scopes is None:
@@ -60,6 +73,8 @@ class DeviceAuthResponse:
 
 
 class OAuthProvider:
+    # OpenAI / Codex CLI public client — loopback callback on :1455, plus a
+    # device-code flow. Token endpoint is form-encoded.
     OPEN_AI = OAuthConfig(
         client_id="app_EMoamEEZ73f0CkXaXp7hrann",
         client_secret="",
@@ -69,6 +84,24 @@ class OAuthProvider:
         device_endpoint="/api/accounts/deviceauth/usercode",
         scopes=["openid", "profile", "email", "offline_access"],
         callback_port=1455,
+    )
+
+    # Anthropic / Claude Code public client. Authorization happens on
+    # claude.ai; the code is shown on a hosted callback page and pasted back
+    # (manual). Tokens are exchanged as JSON on console.anthropic.com.
+    ANTHROPIC = OAuthConfig(
+        client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        client_secret="",
+        issuer="https://claude.ai",
+        authorize_endpoint="/oauth/authorize",
+        token_endpoint="https://console.anthropic.com/v1/oauth/token",
+        scopes=["org:create_api_key", "user:profile", "user:inference"],
+        redirect_uri="https://console.anthropic.com/oauth/code/callback",
+        token_style="json",
+        manual=True,
+        authorize_params={"code": "true"},
+        state_is_verifier=True,
+        send_state_in_token=True,
     )
 
 
@@ -158,7 +191,20 @@ class OAuthClient:
         self.storage_key = storage_key
 
     def _get_issuer_url(self, endpoint: str) -> str:
+        # Some providers host the token endpoint on a different origin than the
+        # authorize endpoint (Anthropic: claude.ai vs console.anthropic.com),
+        # so an absolute endpoint is used verbatim.
+        if endpoint.startswith("http://") or endpoint.startswith("https://"):
+            return endpoint
         return f"{self.config.issuer.rstrip('/')}{endpoint}"
+
+    def _post_token(self, data: dict) -> dict:
+        url = self._get_issuer_url(self.config.token_endpoint)
+        if self.config.token_style == "json":
+            # JSON body; keep the default (browser-ish) User-Agent — forcing an
+            # unusual one (e.g. "anthropic") gets 429'd by the edge/WAF.
+            return post_json(url, data, headers={}, timeout=_OAUTH_TIMEOUT)
+        return post_form(url, data, timeout=_OAUTH_TIMEOUT)
 
     def build_authorize_url(self, state: str, code_challenge: str) -> str:
         params = {
@@ -173,6 +219,8 @@ class OAuthClient:
         if self.config.issuer == "https://auth.openai.com":
             params["codex_cli_simplified_flow"] = "true"
             params["originator"] = "opencode"
+        if self.config.authorize_params:
+            params.update(self.config.authorize_params)
         return f"{self._get_issuer_url(self.config.authorize_endpoint)}?{urlencode(params)}"
 
     def _tokens_from_payload(self, data: dict, fallback_refresh: str = "") -> OAuthTokens:
@@ -185,20 +233,25 @@ class OAuthClient:
             token_type=data.get("token_type", "Bearer"),
         )
 
-    def exchange_code(self, code: str, code_verifier: str, redirect_uri: str) -> OAuthTokens:
+    def exchange_code(
+        self, code: str, code_verifier: str, redirect_uri: str, state: str = ""
+    ) -> OAuthTokens:
+        # Manual (paste-back) flows return "code#state"; split the halves.
+        code_part, _, state_part = code.partition("#")
+        code_part = code_part.strip()
         data = {
             "grant_type": "authorization_code",
-            "code": code,
+            "code": code_part,
             "redirect_uri": redirect_uri,
             "code_verifier": code_verifier,
             "client_id": self.config.client_id,
         }
+        # Anthropic requires the returned state echoed back in the token body.
+        if self.config.send_state_in_token:
+            data["state"] = state or state_part.strip()
         if self.config.client_secret:
             data["client_secret"] = self.config.client_secret
-        payload = post_form(
-            self._get_issuer_url(self.config.token_endpoint), data, timeout=_OAUTH_TIMEOUT
-        )
-        return self._tokens_from_payload(payload)
+        return self._tokens_from_payload(self._post_token(data))
 
     def refresh_tokens(self, refresh_token: str) -> OAuthTokens:
         data = {
@@ -208,10 +261,7 @@ class OAuthClient:
         }
         if self.config.client_secret:
             data["client_secret"] = self.config.client_secret
-        payload = post_form(
-            self._get_issuer_url(self.config.token_endpoint), data, timeout=_OAUTH_TIMEOUT
-        )
-        return self._tokens_from_payload(payload, fallback_refresh=refresh_token)
+        return self._tokens_from_payload(self._post_token(data), fallback_refresh=refresh_token)
 
     def start_device_auth(self) -> DeviceAuthResponse:
         if not self.config.device_endpoint:
@@ -255,6 +305,7 @@ class OAuthClient:
 def create_oauth_client(provider_kind: str) -> OAuthClient | None:
     configs = {
         "openai": (OAuthProvider.OPEN_AI, "OPENAI"),
+        "anthropic": (OAuthProvider.ANTHROPIC, "ANTHROPIC"),
     }
     if provider_kind not in configs:
         return None
@@ -265,6 +316,55 @@ def create_oauth_client(provider_kind: str) -> OAuthClient | None:
 def oauth_supported(provider_kind: str) -> bool:
     """Whether `provider_kind` has a usable OAuth client registered."""
     return create_oauth_client(provider_kind) is not None
+
+
+def is_manual_oauth(provider_kind: str) -> bool:
+    """True when the flow needs the user to paste a code back (Anthropic)."""
+    client = create_oauth_client(provider_kind)
+    return bool(client and client.config.manual)
+
+
+def begin_manual_oauth(provider_kind: str) -> tuple[str, str, str] | None:
+    """Start a paste-back OAuth flow.
+
+    Returns (authorize_url, code_verifier, state). The caller opens the URL,
+    collects the pasted code, and passes everything to `complete_manual_oauth`.
+    """
+    client = create_oauth_client(provider_kind)
+    if not client:
+        log.error("OAuth is not configured for provider kind %r", provider_kind)
+        return None
+    verifier, challenge = PKCE.generate()
+    state = verifier if client.config.state_is_verifier else secrets.token_urlsafe(32)
+    return client.build_authorize_url(state, challenge), verifier, state
+
+
+def complete_manual_oauth(
+    provider_kind: str, pasted: str, verifier: str, state: str
+) -> OAuthTokens | None:
+    """Finish a paste-back flow: validate state, exchange the code for tokens."""
+    client = create_oauth_client(provider_kind)
+    if not client:
+        return None
+    pasted = (pasted or "").strip()
+    if not pasted:
+        log.error("No authorization code provided")
+        return None
+    # Anthropic returns "code#state"; verify the state half if present.
+    if "#" in pasted:
+        _code, _, returned_state = pasted.partition("#")
+        if returned_state and not secrets.compare_digest(returned_state.strip(), state):
+            log.error("OAuth state mismatch — possible CSRF, authorization rejected")
+            return None
+    try:
+        tokens = client.exchange_code(pasted, verifier, client.config.redirect_uri, state=state)
+    except ProviderError as exc:
+        log.error("OAuth token exchange failed: %s", exc)
+        return None
+    if not tokens.access_token:
+        log.error("OAuth token exchange returned no access token")
+        return None
+    return tokens
 
 
 def run_browser_oauth(provider_kind: str) -> OAuthTokens | None:
