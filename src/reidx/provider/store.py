@@ -54,13 +54,16 @@ class ProviderRecord:
 def build_provider(record: ProviderRecord) -> BaseProvider:
     kind = record.kind
     api_key = record.api_key
-    if record.oauth_access_token and record.oauth_provider in ("openai", "anthropic"):
+    using_oauth = bool(record.oauth_access_token and record.oauth_provider in ("openai", "anthropic"))
+    if using_oauth:
         api_key = record.oauth_access_token
     if kind == "anthropic":
         return AnthropicProvider(
             api_key=api_key,
             base_url=record.base_url or "https://api.anthropic.com",
             default_model=record.default_model,
+            # Claude OAuth tokens are Bearer + beta-header, not x-api-key.
+            auth_style="oauth" if using_oauth and record.oauth_provider == "anthropic" else "x-api-key",
         )
     if kind == "openai":
         return OpenAIProvider(
@@ -80,6 +83,14 @@ def build_provider(record: ProviderRecord) -> BaseProvider:
             base_url=record.base_url,
             default_model=record.default_model,
             api_key=api_key,
+        )
+    if kind == "opencode-go":
+        from reidx.provider.opencode_go import DEFAULT_BASE_URL, OpenCodeGoProvider
+
+        return OpenCodeGoProvider(
+            api_key=api_key,
+            base_url=record.base_url or DEFAULT_BASE_URL,
+            default_model=record.default_model,
         )
     raise ValueError(f"unsupported provider kind: {kind}")
 
@@ -241,11 +252,12 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
             log.debug("replaced registry entry for %s with providers.db record", sp.name)
 
         api_key = sp.decrypted_api_key()
-        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, 'decrypted_oauth_access_token') else ""
-        oauth_refresh = sp.decrypted_oauth_refresh_token() if hasattr(sp, 'decrypted_oauth_refresh_token') else ""
-        oauth_expires = getattr(sp, 'oauth_expires_at', 0)
-        oauth_provider = getattr(sp, 'oauth_provider', "")
-        
+        oauth = getattr(sp, "oauth_tokens", None)
+        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, "decrypted_oauth_access_token") else ""
+        oauth_refresh = oauth.refresh_token if oauth else ""
+        oauth_expires = int(oauth.expires_at) if oauth else 0
+        oauth_provider = sp.kind if oauth_access else ""
+
         if not api_key and not oauth_access and sp.kind not in ("ollama",):
             log.warning(
                 "provider %s in providers.db has no decryptable API key or OAuth token — "

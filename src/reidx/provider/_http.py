@@ -5,6 +5,7 @@ import json
 import os
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from reidx.provider.base import ProviderError
@@ -142,6 +143,36 @@ def post_json(url: str, payload: dict, headers: dict[str, str], timeout: int = T
         raise _http_error(exc.code, err_body) from None
     except urllib.error.URLError as exc:
         raise ProviderError(f"connection error: {exc.reason if hasattr(exc, 'reason') else exc}") from None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProviderError(f"invalid JSON from provider: {exc}") from None
+
+
+def post_form(
+    url: str,
+    fields: dict[str, str],
+    headers: dict[str, str] | None = None,
+    timeout: int = TIMEOUT_SECONDS,
+) -> dict:
+    """POST an application/x-www-form-urlencoded body, return parsed JSON.
+
+    OAuth token endpoints (RFC 6749) require form encoding rather than JSON.
+    """
+    body = urllib.parse.urlencode(fields).encode("utf-8")
+    hdrs = _merge_headers(
+        {"content-type": "application/x-www-form-urlencoded", **(headers or {})}
+    )
+    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")[:500]
+        raise _http_error(exc.code, err_body) from None
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        raise ProviderError(f"connection error: {reason}") from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:

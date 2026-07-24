@@ -33,10 +33,14 @@ class AnthropicProvider(BaseProvider):
         api_key: str,
         base_url: str = DEFAULT_BASE_URL,
         default_model: str = "",
+        auth_style: str = "x-api-key",
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
+        # "x-api-key" for real API keys; "oauth" sends the OAuth access token
+        # as a Bearer credential with the OAuth beta header (Claude sign-in).
+        self.auth_style = auth_style
 
     @classmethod
     def from_env(cls) -> AnthropicProvider | None:
@@ -49,6 +53,12 @@ class AnthropicProvider(BaseProvider):
         return cls(api_key=key, base_url=base, default_model=model)
 
     def _headers(self) -> dict[str, str]:
+        if self.auth_style == "oauth":
+            return {
+                "authorization": f"Bearer {self.api_key}",
+                "anthropic-version": API_VERSION,
+                "anthropic-beta": "oauth-2025-04-20",
+            }
         return {
             "x-api-key": self.api_key,
             "anthropic-version": API_VERSION,

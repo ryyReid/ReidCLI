@@ -1434,7 +1434,10 @@ class ChatApp:
 
     async def _spinner_ticker(self) -> None:
         while True:
-            await asyncio.sleep(0.125)
+            # Refresh faster while a palette transition is mid-flight so eased
+            # animations (unfold, selection settle) look smooth; fall back to
+            # the calm 8 fps cadence for spinners/pulses otherwise.
+            await asyncio.sleep(1 / 60 if self._palette_animating() else 0.125)
             # Prune finished subagent rows past their linger window so the panel
             # actually shrinks when children complete.
             try:
@@ -1446,8 +1449,12 @@ class ChatApp:
                 or self._approving["flag"]
                 or self._deepread_pulse_active()
                 or self._subagent_rows_visible()
+                or self._palette_animating()
             ):
                 self.app.invalidate()
+
+    def _palette_animating(self) -> bool:
+        return self._palette is not None and self._palette.is_animating()
 
     # --- subagent panel --------------------------------------------------
 

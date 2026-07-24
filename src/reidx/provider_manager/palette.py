@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -41,6 +42,31 @@ BG_ROW = "#181616"
 SCROLL_IND = "#2a2a2a"
 HEADER_BG = "#1a1010"
 ITEM_FG = "#d0d0d0"
+
+# --- animation ----------------------------------------------------------
+# Transitions are event-triggered and self-terminating: each sets a start
+# timestamp, renders an eased interpolation over its window, then stops
+# requesting redraws. Nothing animates while the palette sits idle.
+_ANIM_OPEN = 0.22   # seconds — rows unfold top-to-bottom when the box opens
+_ANIM_SEL = 0.16    # seconds — selected row "settles" from a brighter tint
+SEL_BG_POP = "#4a2530"  # brighter selected-row bg that eases down to SEL_BG
+
+
+def _ease_out_cubic(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return 1 - (1 - t) ** 3
+
+
+def _lerp_hex(a: str, b: str, t: float) -> str:
+    """Interpolate between two "#rrggbb" colors; t in [0, 1]."""
+    t = max(0.0, min(1.0, t))
+    ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+    br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+    return (
+        f"#{round(ar + (br - ar) * t):02x}"
+        f"{round(ag + (bg - ag) * t):02x}"
+        f"{round(ab + (bb - ab) * t):02x}"
+    )
 
 
 @dataclass
@@ -104,6 +130,7 @@ class ProviderPalette:
     WIZARD = "wizard"
     MESSAGE = "message"
     MODELS = "models"
+    OAUTH_CODE = "oauth_code"
 
     def __init__(
         self,
@@ -131,6 +158,18 @@ class ProviderPalette:
         self.wizard_data: dict[str, str] = {}
         self.input_is_password = False
         self.input_prompt_text = ""
+
+        # Animation clocks (monotonic seconds; 0.0 == long finished).
+        self._anim_open_at = 0.0
+        self._anim_sel_at = 0.0
+
+        # In-flight manual OAuth (paste-back) state.
+        self._oauth_kind = ""
+        self._oauth_name = ""
+        self._oauth_base_url = ""
+        self._oauth_model = ""
+        self._oauth_verifier = ""
+        self._oauth_state = ""
 
         self.search_buf = Buffer(multiline=False)
         self.input_buf = Buffer(multiline=False)
@@ -166,6 +205,7 @@ class ProviderPalette:
     def is_input_screen(self) -> bool:
         return self._active and self.screen in (
             self.KEY_LABEL, self.KEY_INPUT, self.RENAME_INPUT, self.WIZARD,
+            self.OAUTH_CODE,
         )
 
     def is_list_screen(self) -> bool:
@@ -182,7 +222,26 @@ class ProviderPalette:
         self.search_buf.text = ""
         self.current_provider = None
         self.current_def = None
+        self._anim_open_at = time.monotonic()
+        self._anim_sel_at = 0.0
         self._invalidate()
+
+    def is_animating(self) -> bool:
+        """True while a transition is mid-flight — drives the redraw ticker.
+
+        Returns False once every window has elapsed so the UI stops
+        repainting when nothing is moving.
+        """
+        if not self._active:
+            return False
+        now = time.monotonic()
+        return (
+            now - self._anim_open_at < _ANIM_OPEN
+            or now - self._anim_sel_at < _ANIM_SEL
+        )
+
+    def _mark_selection_moved(self) -> None:
+        self._anim_sel_at = time.monotonic()
 
     def deactivate(self) -> None:
         self._active = False
@@ -233,6 +292,11 @@ class ProviderPalette:
             self.screen = self.MANAGE
             self.selected_index = 0
             self._scroll_offset = 0
+        elif self.screen == self.OAUTH_CODE:
+            self.screen = self.LIST
+            self.input_buf.text = ""
+            self.selected_index = 0
+            self._scroll_offset = 0
         elif self.screen == self.WIZARD:
             if self.wizard_step_idx > 0:
                 self.wizard_step_idx -= 1
@@ -269,6 +333,7 @@ class ProviderPalette:
         if items:
             self.selected_index = (self.selected_index - 1) % len(items)
             self._adjust_scroll(len(items))
+            self._mark_selection_moved()
             self._invalidate()
 
     def on_down(self) -> None:
@@ -276,6 +341,7 @@ class ProviderPalette:
         if items:
             self.selected_index = (self.selected_index + 1) % len(items)
             self._adjust_scroll(len(items))
+            self._mark_selection_moved()
             self._invalidate()
 
     def on_enter(self) -> None:
@@ -338,6 +404,18 @@ class ProviderPalette:
             defs = catalog_search(q)
         else:
             defs = all_providers()
+
+        # Sign-in-with-subscription shortcuts at the top (no search filter, or
+        # when the query matches). data carries the OAuth provider kind.
+        oauth_entries = [
+            ("Sign in with Claude (OAuth)", "Claude Pro/Max — browser + paste code", "anthropic"),
+            ("Sign in with Codex (OAuth)", "ChatGPT/Codex — browser sign-in", "openai"),
+        ]
+        for label, desc, okind in oauth_entries:
+            if not q or q in label.lower() or q in desc.lower() or q in okind:
+                items.append(PaletteItem(
+                    label=label, description=desc, icon="~", kind="oauth", data=okind,
+                ))
 
         for d in defs:
             if d.name.lower() in stored:
@@ -425,6 +503,9 @@ class ProviderPalette:
     def _on_list_select(self, item: PaletteItem) -> None:
         if item.kind == "action":
             self._start_wizard()
+            return
+        if item.kind == "oauth":
+            self._start_oauth(str(item.data or ""))
             return
         if item.kind == "catalog":
             d = item.data
@@ -592,6 +673,24 @@ class ProviderPalette:
 
     def _handle_input_enter(self) -> None:
         text = self.input_buf.text
+        if self.screen == self.OAUTH_CODE:
+            from reidx.provider.oauth import complete_manual_oauth
+
+            code = text.strip()
+            if not code:
+                return
+            tokens = complete_manual_oauth(
+                self._oauth_kind, code, self._oauth_verifier, self._oauth_state
+            )
+            self.input_buf.text = ""
+            if not tokens:
+                self._show_message("OAuth code invalid or exchange failed", self.LIST)
+                return
+            self._save_oauth_provider(
+                self._oauth_name, self._oauth_kind,
+                self._oauth_base_url, self._oauth_model, tokens,
+            )
+            return
         if self.screen == self.KEY_LABEL:
             if not text.strip():
                 return
@@ -626,6 +725,79 @@ class ProviderPalette:
             self.input_buf.text = ""
             self._wizard_advance()
             self._invalidate()
+
+    def _start_oauth(self, kind: str) -> None:
+        from reidx.provider.oauth import (
+            begin_manual_oauth,
+            is_manual_oauth,
+            oauth_supported,
+            run_browser_oauth,
+        )
+
+        if not oauth_supported(kind):
+            self._show_message(f"OAuth is not available for '{kind}'", self.LIST)
+            return
+        if kind == "anthropic":
+            name, base_url, model = "Claude (OAuth)", "https://api.anthropic.com", "claude-sonnet-4-20250514"
+        else:
+            name, base_url, model = "Codex (OAuth)", "https://api.openai.com", "gpt-4o-mini"
+
+        if is_manual_oauth(kind):
+            started = begin_manual_oauth(kind)
+            if not started:
+                self._show_message("Could not start OAuth", self.LIST)
+                return
+            auth_url, verifier, state = started
+            self._oauth_kind = kind
+            self._oauth_name = name
+            self._oauth_base_url = base_url
+            self._oauth_model = model
+            self._oauth_verifier = verifier
+            self._oauth_state = state
+            self._open_url(auth_url)
+            self.screen = self.OAUTH_CODE
+            self.input_buf.text = ""
+            self.input_is_password = False
+            self.input_prompt_text = "Paste the code from your browser, then Enter"
+            self.selected_index = 0
+            self._scroll_offset = 0
+            self._invalidate()
+            return
+
+        # Loopback flow (Codex): opens the browser and blocks until the local
+        # callback catches the redirect (or times out).
+        tokens = run_browser_oauth(kind)
+        if not tokens:
+            self._show_message("OAuth failed or was cancelled", self.LIST)
+            return
+        self._save_oauth_provider(name, kind, base_url, model, tokens)
+
+    def _open_url(self, url: str) -> None:
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001 - user can still copy the logged URL
+            log.warning("could not open browser for %s", url)
+
+    def _save_oauth_provider(self, name, kind, base_url, model, tokens) -> None:
+        existing = self.db.get_provider(name)
+        sp = existing or StoredProvider(
+            name=name, kind=kind, base_url=base_url,
+            default_model=model, auth_method="oauth",
+        )
+        sp.kind = kind
+        sp.base_url = base_url
+        sp.auth_method = "oauth"
+        if not sp.default_model:
+            sp.default_model = model
+        sp.oauth_tokens = tokens
+        self.db.save_provider(sp)
+        self.current_provider = sp
+        self._register_current()
+        self._show_message(
+            f"Signed in — saved '{name}'. Try a prompt or /use {name}", self.LIST
+        )
 
     def _start_wizard(self, edit: bool = False) -> None:
         self.wizard_step_idx = 0
@@ -878,11 +1050,17 @@ class ProviderPalette:
             return
         sp = self.current_provider
         api_key = sp.decrypted_api_key()
+        oauth = getattr(sp, "oauth_tokens", None)
+        oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, "decrypted_oauth_access_token") else ""
         try:
             record = ProviderRecord(
                 name=sp.name, kind=sp.kind, base_url=sp.base_url,
                 api_key=api_key, default_model=sp.default_model,
                 auth_method=sp.auth_method,
+                oauth_access_token=oauth_access,
+                oauth_refresh_token=oauth.refresh_token if oauth else "",
+                oauth_expires_at=int(oauth.expires_at) if oauth else 0,
+                oauth_provider=sp.kind if oauth_access else "",
             )
             provider = build_provider(record)
             if not sp.default_model:
@@ -983,11 +1161,31 @@ class ProviderPalette:
         self._adjust_scroll(len(items))
         visible_start = self._scroll_offset
         visible_end = min(visible_start + max_lines, len(items))
+        visible_count = visible_end - visible_start
+
+        now = time.monotonic()
+        # Open unfold: reveal rows top-to-bottom over _ANIM_OPEN.
+        revealed = visible_count
+        if self._anim_open_at and now - self._anim_open_at < _ANIM_OPEN:
+            reveal = _ease_out_cubic((now - self._anim_open_at) / _ANIM_OPEN)
+            revealed = max(1, min(visible_count, round(reveal * visible_count)))
+        # Selection settle: selected row bg eases down from a brighter tint.
+        sel_bg = SEL_BG
+        if self._anim_sel_at and now - self._anim_sel_at < _ANIM_SEL:
+            ts = _ease_out_cubic((now - self._anim_sel_at) / _ANIM_SEL)
+            sel_bg = _lerp_hex(SEL_BG_POP, SEL_BG, ts)
+
         frags: list[tuple[str, str]] = []
         for i in range(visible_start, visible_end):
+            # Rows past the unfold frontier render blank until they reveal.
+            if i - visible_start >= revealed:
+                frags.append((f"bg:{BG}", " " * inner))
+                if i != visible_end - 1:
+                    frags.append((f"bg:{BG}", "\n"))
+                continue
             item = items[i]
             is_sel = i == self.selected_index
-            row_bg = SEL_BG if is_sel else (BG_ALT if i % 2 else BG_ROW)
+            row_bg = sel_bg if is_sel else (BG_ALT if i % 2 else BG_ROW)
             label_part = f"  {item.icon}  {item.label}"
             desc = item.description
             remaining = max(1, inner - len(label_part) - 1)
@@ -1036,6 +1234,8 @@ class ProviderPalette:
             return " Key:    "
         if self.screen == self.RENAME_INPUT:
             return " New:    "
+        if self.screen == self.OAUTH_CODE:
+            return " Code:   "
         if self.screen == self.WIZARD:
             step = WIZARD_STEPS[self.wizard_step_idx]
             return f" {step.prompt}: "
