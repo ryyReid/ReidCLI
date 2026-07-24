@@ -10,10 +10,6 @@ from typing import Any
 from prompt_toolkit.buffer import Buffer
 
 from reidx.diagnostics.logger import get_logger
-from reidx.provider.models import (
-    denormalize_model_id,
-    normalize_model_id,
-)
 from reidx.provider.store import ProviderRecord, build_provider, validate_provider
 from reidx.provider_manager.catalog import (
     ProviderDefinition,
@@ -26,30 +22,45 @@ from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredP
 
 log = get_logger("reidx.provider_manager.palette")
 
-SEL_BG = "#2d1820"
-SEL_FG = "#ffaaaa"
-SEL_ICON = "#ff6b6b"
-DIM = "#6b5b5b"
-ACCENT = "#ff6b6b"
-OK = "#7ddb7d"
-WARN = "#ffdb6b"
-ERR = "#ff6b6b"
-BORDER = "#3d2a2a"
-BORDER_SEL = "#ff6b6b"
-BG = "#131313"
-BG_ALT = "#1c1818"
-BG_ROW = "#181616"
+BG = "#151111"
+BG_LIST = "#1a1517"
+BG_ROW_A = "#1d1719"
+BG_ROW_B = "#181314"
+SEL_BG = "#3a1a22"
+SEL_FG = "#ffd5d5"
+SEL_ICON = "#ff7a7a"
+DIM = "#7a6868"
+ACCENT = "#ff5f5f"
+ACCENT_SOFT = "#d75f5f"
+OK = "#5fd75f"
+WARN = "#ffd75f"
+ERR = "#ff5f5f"
 SCROLL_IND = "#2a2a2a"
-HEADER_BG = "#1a1010"
-ITEM_FG = "#d0d0d0"
+ITEM_FG = "#e0d8d8"
+ITEM_FG_DIM = "#8a7a7a"
+HEADER_BG = "#221518"
+SECTION_FG = "#a07878"
+CONNECTED_FG = "#5fd75f"
+AVAILABLE_FG = "#9a8a8a"
+OAUTH_FG = "#c8a0d8"
+
+IC_CONNECT = "○"
+IC_CONNECTED = "✓"
+IC_ACTIVE = "●"
+IC_OAUTH = "≈"
+IC_DOT = "·"
+IC_EDIT = "✎"
+IC_TRASH = "✕"
+IC_MODEL = "◈"
+IC_KEY = "⇄"
+IC_WARN = "!"
+IC_ERR = "✕"
+IC_BLANK = " "
 
 # --- animation ----------------------------------------------------------
-# Transitions are event-triggered and self-terminating: each sets a start
-# timestamp, renders an eased interpolation over its window, then stops
-# requesting redraws. Nothing animates while the palette sits idle.
-_ANIM_OPEN = 0.22   # seconds — rows unfold top-to-bottom when the box opens
-_ANIM_SEL = 0.16    # seconds — selected row "settles" from a brighter tint
-SEL_BG_POP = "#4a2530"  # brighter selected-row bg that eases down to SEL_BG
+_ANIM_OPEN = 0.22
+_ANIM_SEL = 0.16
+SEL_BG_POP = "#4d2228"
 
 
 def _ease_out_cubic(t: float) -> float:
@@ -85,16 +96,24 @@ class WizardStep:
     is_text: bool = True
     optional: bool = False
     is_password: bool = False
+    hint: str = ""
 
 
 WIZARD_STEPS: list[WizardStep] = [
-    WizardStep("name", "Provider Name"),
-    WizardStep("base_url", "API Base URL"),
-    WizardStep("kind", "Provider Kind", is_text=False),
-    WizardStep("default_model", "Default Model", optional=True),
-    WizardStep("auth_method", "Authentication Method", is_text=False),
-    WizardStep("oauth_flow", "OAuth Flow", is_text=False, optional=True),
-    WizardStep("api_key", "API Key", optional=True, is_password=True),
+    WizardStep("name", "Provider Name",
+               hint="A label you'll recognize (e.g. 'Work OpenAI', 'Local Llama')"),
+    WizardStep("base_url", "API Base URL",
+               hint="Origin only — /v1 is added for you (e.g. https://api.openai.com)"),
+    WizardStep("kind", "Provider Kind", is_text=False,
+               hint="Pick the wire protocol your provider speaks"),
+    WizardStep("default_model", "Default Model", optional=True,
+               hint="Leave blank to auto-pick from the provider's /models"),
+    WizardStep("auth_method", "Authentication Method", is_text=False,
+               hint="How the API key is sent in the request header"),
+    WizardStep("oauth_flow", "OAuth Flow", is_text=False, optional=True,
+               hint="Only for OpenAI/Anthropic OAuth sign-in"),
+    WizardStep("api_key", "API Key", optional=True, is_password=True,
+               hint="Paste a key, or skip if the provider needs no auth"),
 ]
 
 KIND_OPTIONS = [
@@ -378,8 +397,8 @@ class ProviderPalette:
             return self._key_select_items("delete")
         if self.screen == self.CONFIRM:
             return [
-                PaletteItem("Confirm", icon="Y", kind="action"),
-                PaletteItem("Cancel", icon="N", kind="action"),
+                PaletteItem("Confirm", icon=IC_CONNECTED, kind="action"),
+                PaletteItem("Cancel", icon=IC_TRASH, kind="action"),
             ]
         if self.screen == self.WIZARD:
             step = WIZARD_STEPS[self.wizard_step_idx]
@@ -408,27 +427,27 @@ class ProviderPalette:
         # Sign-in-with-subscription shortcuts at the top (no search filter, or
         # when the query matches). data carries the OAuth provider kind.
         oauth_entries = [
-            ("Sign in with Claude (OAuth)", "Claude Pro/Max — browser + paste code", "anthropic"),
-            ("Sign in with Codex (OAuth)", "ChatGPT/Codex — browser sign-in", "openai"),
+            ("Sign in with Claude (OAuth)", "Claude Pro/Max — sign in via claude.ai, paste code", "anthropic"),
+            ("Sign in with Codex (OAuth)", "ChatGPT/Codex — sign in via browser (loopback)", "openai"),
         ]
         for label, desc, okind in oauth_entries:
             if not q or q in label.lower() or q in desc.lower() or q in okind:
                 items.append(PaletteItem(
-                    label=label, description=desc, icon="~", kind="oauth", data=okind,
+                    label=label, description=desc, icon=IC_OAUTH, kind="oauth", data=okind,
                 ))
 
         for d in defs:
             if d.name.lower() in stored:
                 sp = stored[d.name.lower()]
                 active_key = sp.active_key()
-                icon = "?" if active_key else "	"
+                icon = IC_CONNECTED if active_key else IC_DOT
                 items.append(PaletteItem(
                     label=d.name, description=d.description, icon=icon,
                     kind="stored", data=sp,
                 ))
             else:
                 items.append(PaletteItem(
-                    label=d.name, description=d.description, icon="?",
+                    label=d.name, description=d.description, icon=IC_CONNECT,
                     kind="catalog", data=d,
                 ))
 
@@ -436,7 +455,7 @@ class ProviderPalette:
             if sp.name.lower() not in {d.name.lower() for d in defs}:
                 if not q or q in sp.name.lower() or q in sp.kind.lower() or q in sp.base_url.lower():
                     active_key = sp.active_key()
-                    icon = "?" if active_key else "	"
+                    icon = IC_CONNECTED if active_key else IC_DOT
                     items.append(PaletteItem(
                         label=sp.name, description=f"{sp.kind}  {sp.base_url}", icon=icon,
                         kind="stored", data=sp,
@@ -444,7 +463,7 @@ class ProviderPalette:
 
         items.append(PaletteItem(
             label="Add Custom Provider", description="Manually configure a provider",
-            icon="+", kind="action",
+            icon=IC_CONNECT, kind="action",
         ))
         return items
 
@@ -453,24 +472,24 @@ class ProviderPalette:
         if self.current_provider:
             for k in self.current_provider.keys:
                 is_active = k.id == self.current_provider.active_key_id
-                icon = "?" if is_active else "	"
+                icon = IC_ACTIVE if is_active else IC_BLANK
                 desc = "active" if is_active else ""
                 items.append(PaletteItem(label=k.label, description=desc, icon=icon, kind="action", data=k))
-        items.append(PaletteItem(label="Add API Key", icon="+", kind="action"))
+        items.append(PaletteItem(label="Add API Key", icon=IC_CONNECT, kind="action"))
         return items
 
     def _manage_items(self) -> list[PaletteItem]:
         items: list[PaletteItem] = []
         sp = self.current_provider
         if sp and len(sp.keys) > 1:
-            items.append(PaletteItem("Switch Key", "Change the active API key", icon=""))
-        items.append(PaletteItem("Add Key", "Add another API key", icon="+"))
+            items.append(PaletteItem("Switch Key", "Change the active API key", icon=IC_KEY))
+        items.append(PaletteItem("Add Key", "Add another API key", icon=IC_CONNECT))
         if sp and sp.keys:
-            items.append(PaletteItem("Rename Key", "Rename a key label", icon="?"))
-            items.append(PaletteItem("Delete Key", "Remove a key", icon="?"))
-        items.append(PaletteItem("View Models", "Browse and set default model", icon="M"))
-        items.append(PaletteItem("Edit Provider", "Change base URL, model, etc.", icon="?"))
-        items.append(PaletteItem("Remove Provider", "Delete provider and all keys", icon="?", kind="action"))
+            items.append(PaletteItem("Rename Key", "Rename a key label", icon=IC_EDIT))
+            items.append(PaletteItem("Delete Key", "Remove a key", icon=IC_TRASH))
+        items.append(PaletteItem("View Models", "Browse and set default model", icon=IC_MODEL))
+        items.append(PaletteItem("Edit Provider", "Change base URL, model, etc.", icon=IC_EDIT))
+        items.append(PaletteItem("Remove Provider", "Delete provider and all keys", icon=IC_TRASH, kind="action"))
         return items
 
     def _key_select_items(self, _mode: str) -> list[PaletteItem]:
@@ -478,7 +497,7 @@ class ProviderPalette:
         if self.current_provider:
             for k in self.current_provider.keys:
                 is_active = k.id == self.current_provider.active_key_id
-                icon = "?" if is_active else "	"
+                icon = IC_ACTIVE if is_active else IC_BLANK
                 items.append(PaletteItem(label=k.label, icon=icon, kind="action", data=k))
         return items
 
@@ -625,22 +644,22 @@ class ProviderPalette:
             models = provider.fetch_models()
         except Exception as exc:
             log.warning("failed to fetch models for %s: %s", sp.name, exc)
-            items.append(PaletteItem("Error loading models", str(exc), icon="!", kind="action"))
+            items.append(PaletteItem("Error loading models", str(exc), icon=IC_WARN, kind="action"))
             return items
-        
+
         if not models:
-            items.append(PaletteItem("No models available", "Provider returned empty model list", icon="!", kind="action"))
+            items.append(PaletteItem("No models available", "Provider returned empty model list", icon=IC_WARN, kind="action"))
             return items
-        
+
         current_model = sp.default_model or ""
         for model in models:
             is_current = model == current_model
-            icon = "?" if is_current else "	"
+            icon = IC_ACTIVE if is_current else IC_BLANK
             desc = "current" if is_current else ""
             items.append(PaletteItem(
                 label=model, description=desc, icon=icon, kind="model", data=model
             ))
-        
+
         return items
 
     def _on_models_select(self, item: PaletteItem) -> None:
@@ -906,9 +925,7 @@ class ProviderPalette:
                 except Exception:
                     models = []
                 if models:
-                    normalized = normalize_model_id(models[0], provider_name=name)
-                    if normalized.is_valid:
-                        model = denormalize_model_id(normalized)
+                    model = models[0]
 
         self._commit_wizard_provider(name, kind, base_url, model, auth, api_key, oauth_tokens=oauth_tokens)
 
@@ -1069,11 +1086,9 @@ class ProviderPalette:
                 except Exception:
                     models = []
                 if models:
-                    normalized = normalize_model_id(models[0], provider_name=sp.name)
-                    if normalized.is_valid:
-                        provider.default_model = denormalize_model_id(normalized)
-                        sp.default_model = denormalize_model_id(normalized)
-                        self.db.save_provider(sp)
+                    provider.default_model = models[0]
+                    sp.default_model = models[0]
+                    self.db.save_provider(sp)
             aliases: list[str] = []
             if sp.catalog_id:
                 try:
@@ -1108,49 +1123,68 @@ class ProviderPalette:
 
     def header_fragments(self) -> list[tuple[str, str]]:
         if self.screen == self.LIST:
-            return [(f"bold {ACCENT}", "  ✻ Connect Provider")]
+            title = "  ✻ Connect Provider"
+            connected = len([p for p in self.db.list_providers() if p.active_key()])
+            total = len(self.db.list_providers())
+            right = f"{connected} connected" + (f" of {total} added" if total else "")
+            inner = self.inner_width()
+            pad = max(2, inner - len(title) - len(right))
+            return [
+                (f"bold {ACCENT}", title),
+                (f"{DIM}", " " * pad),
+                (f"{DIM}", right + " "),
+            ]
         if self.screen == self.KEYS:
             name = self.current_provider.name if self.current_provider else ""
-            return [(f"bold {ACCENT}", f"  {name}"), ("", "  "), (DIM, "Keys")]
+            return [(f"bold {ACCENT}", f"  {name}"), (f"{SECTION_FG}", "  Keys")]
         if self.screen == self.MANAGE:
             name = self.current_provider.name if self.current_provider else ""
             sp = self.current_provider
             active = ""
             if sp and sp.active_key():
-                active = f"  Active: {sp.active_key().label}"
-            return [(f"bold {ACCENT}", f"  {name}"), (DIM, active)]
+                active = f"  ·  {IC_ACTIVE} {sp.active_key().label}"
+            return [(f"bold {ACCENT}", f"  {name}"), (f"{DIM}", active)]
         if self.screen == self.KEY_LABEL:
-            return [(f"bold {ACCENT}", "  Add API Key"), ("", "  "), (DIM, "Step 1/2: Label")]
+            return [(f"bold {ACCENT}", "  Add API Key"), (f"{SECTION_FG}", "  Step 1/2 · Label")]
         if self.screen == self.KEY_INPUT:
-            return [(f"bold {ACCENT}", "  Add API Key"), ("", "  "), (DIM, f"Step 2/2: Key for '{self._pending_label}'")]
+            return [(f"bold {ACCENT}", "  Add API Key"), (f"{SECTION_FG}", f"  Step 2/2 · {self._pending_label}")]
         if self.screen == self.RENAME_SEL:
-            return [(f"bold {ACCENT}", "  Rename Key"), ("", "  "), (DIM, "Select a key")]
+            return [(f"bold {ACCENT}", "  Rename Key"), (f"{SECTION_FG}", "  Select a key")]
         if self.screen == self.RENAME_INPUT:
-            return [(f"bold {ACCENT}", "  Rename Key"), ("", "  "), (DIM, "Enter new label")]
+            return [(f"bold {ACCENT}", "  Rename Key"), (f"{SECTION_FG}", "  Enter new label")]
         if self.screen == self.DELETE_SEL:
-            return [(f"bold {ACCENT}", "  Delete Key"), ("", "  "), (DIM, "Select a key")]
+            return [(f"bold {ERR}", "  Delete Key"), (f"{SECTION_FG}", "  Select a key")]
         if self.screen == self.CONFIRM:
             return [(f"bold {WARN}", "  Confirm")]
         if self.screen == self.WIZARD:
             step = WIZARD_STEPS[self.wizard_step_idx]
             total = len(WIZARD_STEPS)
-            return [(f"bold {ACCENT}", "  + Custom Provider"), ("", "  "), (DIM, f"Step {self.wizard_step_idx + 1}/{total}: {step.prompt}")]
+            return [
+                (f"bold {ACCENT}", "  + Custom Provider"),
+                (f"{SECTION_FG}", f"  Step {self.wizard_step_idx + 1}/{total} · {step.prompt}"),
+            ]
         if self.screen == self.MESSAGE:
             return [(f"bold {OK}", "  ✓ Done")]
         if self.screen == self.MODELS:
             name = self.current_provider.name if self.current_provider else ""
-            return [(f"bold {ACCENT}", f"  {name}"), ("", "  "), (DIM, "Models")]
+            return [(f"bold {ACCENT}", f"  {name}"), (f"{SECTION_FG}", "  Models")]
+        if self.screen == self.OAUTH_CODE:
+            return [(f"bold {ACCENT}", "  Sign in")]
         return [(f"bold {ACCENT}", "  Provider")]
 
     def content_fragments(self) -> list[tuple[str, str]]:
         if self.screen == self.MESSAGE:
-            return [(f"{OK}", f"  {self._message_text}")]
+            return [(f"{OK}", f"  {IC_CONNECTED} "), (f"{ITEM_FG}", self._message_text)]
         if self.screen == self.CONFIRM:
-            return [(f"{WARN}", f"  {self._confirm_text}")]
+            return [(f"{WARN}", f"  {IC_WARN} "), (f"{ITEM_FG}", self._confirm_text)]
         if self.screen == self.WIZARD and self.is_input_screen():
             step = WIZARD_STEPS[self.wizard_step_idx]
-            hint = " (optional - press Enter to skip)" if step.optional else ""
-            return [(DIM, f"  {step.prompt}{hint}")]
+            opt = " (optional — Enter to skip)" if step.optional else ""
+            frags: list[tuple[str, str]] = [(f"bold {ACCENT_SOFT}", f"  {step.prompt}"), (f"{DIM}", opt)]
+            if step.hint:
+                frags.append((f"{DIM}", "\n"))
+                frags.append((f"{DIM}", f"  {step.hint}"))
+            return frags
         if self.is_input_screen():
             return [(DIM, f"  {self.input_prompt_text}")]
         items = self._build_items()
@@ -1164,12 +1198,10 @@ class ProviderPalette:
         visible_count = visible_end - visible_start
 
         now = time.monotonic()
-        # Open unfold: reveal rows top-to-bottom over _ANIM_OPEN.
         revealed = visible_count
         if self._anim_open_at and now - self._anim_open_at < _ANIM_OPEN:
             reveal = _ease_out_cubic((now - self._anim_open_at) / _ANIM_OPEN)
             revealed = max(1, min(visible_count, round(reveal * visible_count)))
-        # Selection settle: selected row bg eases down from a brighter tint.
         sel_bg = SEL_BG
         if self._anim_sel_at and now - self._anim_sel_at < _ANIM_SEL:
             ts = _ease_out_cubic((now - self._anim_sel_at) / _ANIM_SEL)
@@ -1177,7 +1209,6 @@ class ProviderPalette:
 
         frags: list[tuple[str, str]] = []
         for i in range(visible_start, visible_end):
-            # Rows past the unfold frontier render blank until they reveal.
             if i - visible_start >= revealed:
                 frags.append((f"bg:{BG}", " " * inner))
                 if i != visible_end - 1:
@@ -1185,26 +1216,26 @@ class ProviderPalette:
                 continue
             item = items[i]
             is_sel = i == self.selected_index
-            row_bg = sel_bg if is_sel else (BG_ALT if i % 2 else BG_ROW)
-            label_part = f"  {item.icon}  {item.label}"
+            row_bg = sel_bg if is_sel else (BG_ROW_A if i % 2 else BG_ROW_B)
+            icon_color = self._icon_color(item.kind)
+            label_color = SEL_FG if is_sel else ITEM_FG
+            label_style = f"bg:{row_bg} {label_color} bold" if is_sel else f"bg:{row_bg} {label_color}"
+            icon_style = f"bg:{row_bg} {icon_color} bold" if is_sel else f"bg:{row_bg} {icon_color}"
+            label_part = item.label
+            icon_part = f"  {item.icon}  "
             desc = item.description
-            remaining = max(1, inner - len(label_part) - 1)
+            remaining = max(1, inner - len(icon_part) - len(label_part) - 1)
             if len(desc) > remaining:
-                desc = desc[: remaining - 1] + "."
-            desc_part = f" {desc}" if desc else ""
-            pad = max(0, inner - len(label_part) - len(desc_part))
-            if is_sel:
-                frags.append((f"bg:{row_bg} {SEL_FG} bold", label_part))
-                if desc_part:
-                    frags.append((f"bg:{row_bg} {DIM}", desc_part + " " * pad))
-                else:
-                    frags.append((f"bg:{row_bg}", " " * pad))
+                desc = desc[: remaining - 1] + "…"
+            desc_part = f"  {desc}" if desc else ""
+            pad = max(0, inner - len(icon_part) - len(label_part) - len(desc_part))
+            frags.append((icon_style, icon_part))
+            frags.append((label_style, label_part))
+            if desc_part:
+                desc_style = f"bg:{row_bg} {ITEM_FG_DIM}" if not is_sel else f"bg:{row_bg} {DIM}"
+                frags.append((desc_style, desc_part + " " * pad))
             else:
-                frags.append((f"bg:{row_bg} {ITEM_FG}", label_part))
-                if desc_part:
-                    frags.append((f"bg:{row_bg} {DIM}", desc_part + " " * pad))
-                else:
-                    frags.append((f"bg:{row_bg}", " " * pad))
+                frags.append((f"bg:{row_bg}", " " * pad))
             if i != visible_end - 1:
                 frags.append((f"bg:{row_bg}", "\n"))
         remaining_lines = max_lines - (visible_end - visible_start)
@@ -1214,18 +1245,38 @@ class ProviderPalette:
             frags.append((f"bg:{BG}", " " * inner))
         return frags
 
+    def _icon_color(self, kind: str) -> str:
+        if kind == "oauth":
+            return OAUTH_FG
+        if kind == "stored":
+            return CONNECTED_FG
+        if kind == "action" or kind == "model":
+            return ACCENT_SOFT
+        if kind == "catalog":
+            return AVAILABLE_FG
+        return ACCENT
+
     def footer_fragments(self) -> list[tuple[str, str]]:
         if self.is_input_screen():
-            return [(DIM, "  Enter to continue  Esc to go back")]
+            return self._key_hints([("Enter", "continue"), ("Esc", "back")])
         if self.screen == self.CONFIRM:
-            return [(DIM, "   Select  Enter Confirm  Esc Cancel")]
+            return self._key_hints([("↑↓", "select"), ("Enter", "confirm"), ("Esc", "cancel")])
         if self.screen == self.MESSAGE:
-            return [(DIM, "  Enter to continue")]
+            return self._key_hints([("Enter", "continue")])
         if self.screen == self.LIST:
-            return [(DIM, "   Navigate  Enter Select  Esc Close  Type to search")]
+            return self._key_hints([("↑↓", "navigate"), ("Enter", "select"), ("Esc", "close"), ("type", "search")])
         if self.screen == self.MODELS:
-            return [(DIM, "   Navigate  Enter Select  Esc Back")]
-        return [(DIM, "   Navigate  Enter Select  Esc Back")]
+            return self._key_hints([("↑↓", "navigate"), ("Enter", "select"), ("Esc", "back")])
+        return self._key_hints([("↑↓", "navigate"), ("Enter", "select"), ("Esc", "back")])
+
+    def _key_hints(self, hints: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        frags: list[tuple[str, str]] = [(DIM, " ")]
+        for i, (key, action) in enumerate(hints):
+            if i:
+                frags.append((f"{DIM}", "  "))
+            frags.append((f"bold {ITEM_FG_DIM}", key))
+            frags.append((f"{DIM}", f" {action}"))
+        return frags
 
     def input_label(self) -> str:
         if self.screen == self.KEY_LABEL:
@@ -1251,6 +1302,9 @@ class ProviderPalette:
             return 1
         if self.screen == self.CONFIRM:
             return 1
+        if self.screen == self.WIZARD and self.is_input_screen():
+            step = WIZARD_STEPS[self.wizard_step_idx]
+            return 2 if step.hint else 1
         if self.is_input_screen():
             return 1
         items = self._build_items()

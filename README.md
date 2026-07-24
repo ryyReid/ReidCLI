@@ -9,9 +9,10 @@ input history, token streaming, drag-to-copy, collapsible reasoning, a live
 subagent panel, and a live `/` command menu.
 
 **Status:** Phase 5 complete, plus TUI rewrite, multi-provider HTTP clients
-(Anthropic / OpenAI / OpenAI-compatible / Ollama / **OpenCode Go**), SSE
-streaming, auto context windows, compact + cost, soft provider errors, DeepReid,
-Nyx, web search, and workflows. See `docs/` for architecture notes.
+(Anthropic / OpenAI / OpenAI-compatible / Ollama / **OpenCode Go** /
+**Ollie Qwen 3.8Max**), SSE streaming, auto context windows, compact + cost, soft
+provider errors, DeepReid, Nyx, web search, and workflows. See `docs/` for
+architecture notes.
 
 ---
 
@@ -133,7 +134,7 @@ exit). Output fills the **live terminal width**; the footer stays one compact li
 
 | Command | Purpose |
 |---|---|
-| `/model [list\|id]` | List or set model; **context meter updates for that model** |
+| `/model [list\|id]` | Open the **model picker dropdown** (fuzzy-search, live fetch, non-blocking) or set by id; context meter updates for that model |
 | `/effort auto\|low\|medium\|high\|xhigh` | Reasoning effort (`auto` classifies the prompt) |
 | `/stream auto\|on\|off` | Token streaming (default **auto**) |
 | `/mode` / `/nyx` / `/permissions` / `/tools` | Policy and tools |
@@ -192,13 +193,30 @@ MiniMax/Qwen over the Anthropic Messages endpoint — one key, one entry.
 
 | Catalog entry | Base origin | Routed backend | Example models |
 |---|---|---|---|
-| **OpenCode Go** | `https://opencode.ai/zen/go/v1` | OpenAI-compatible | `glm-5.2`, `kimi-k2.7-code`, `deepseek-v4-flash`, `mimo-v2.5` |
-| **OpenCode Go** | `https://opencode.ai/zen/go/v1` | Anthropic Messages | `qwen3.7-plus`, `minimax-m2.7` |
+| **OpenCode Go** | `https://opencode.ai/zen/v1` | OpenAI-compatible | `glm-5.2`, `kimi-k2.7-code`, `deepseek-v4-flash`, `mimo-v2.5` |
+| **OpenCode Go** | `https://opencode.ai/zen/v1` | Anthropic Messages | `qwen3.7-plus`, `minimax-m2.7` |
 
 Aliases: `opencode`, `opencode-go`, `zen-go`, `go`, `opencode-anthropic`, `zen-go-anthropic`.
 
 HTTP clients send a normal **User-Agent** so Cloudflare does not block stdlib
 `urllib` (403 HTML / error 1010).
+
+### Ollie Qwen 3.8Max
+
+A free hosted gateway for Qwen and DeepSeek models — no signup, works the moment
+you launch `reid`. A shared key ships baked-in, so it's ready out of the box:
+
+```powershell
+reid
+/use ollie
+/model            # pick from the live dropdown
+```
+
+Models include `qwen3.8-max-preview`, `qwen3.7-plus`, `deepseek-v4-flash`,
+`deepseek-v4-pro`, and `deepseek-v4-vision`. Override the key or endpoint with
+`OLLIE_QWEN_API_KEY` / `OLLIE_QWEN_BASE_URL` if you host your own.
+
+Aliases: `ollie`, `ollie-qwen`, `qwen3.8`, `qwen-max`.
 
 ### Context windows
 

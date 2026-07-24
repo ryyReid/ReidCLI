@@ -63,6 +63,8 @@ class OllamaProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        *,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         model = model or self.default_model
         payload: dict[str, Any] = {

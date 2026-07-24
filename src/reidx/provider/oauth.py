@@ -330,16 +330,14 @@ def begin_manual_oauth(provider_kind: str) -> tuple[str, str, str] | None:
     Returns (authorize_url, code_verifier, state). The caller opens the URL,
     collects the pasted code, and passes everything to `complete_manual_oauth`.
     """
-
-
-def run_browser_oauth(provider_kind: str) -> OAuthTokens | None:
     client = create_oauth_client(provider_kind)
     if not client:
         log.error("OAuth is not configured for provider kind %r", provider_kind)
         return None
     verifier, challenge = PKCE.generate()
     state = verifier if client.config.state_is_verifier else secrets.token_urlsafe(32)
-    return client.build_authorize_url(state, challenge), verifier, state
+    auth_url = client.build_authorize_url(state, challenge)
+    return auth_url, verifier, state
 
 
 def complete_manual_oauth(

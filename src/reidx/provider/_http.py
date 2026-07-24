@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 
 from reidx.provider.base import ProviderError
 
@@ -18,10 +21,15 @@ MODELS_TIMEOUT_SECONDS = 8
 # HTTP 403 + HTML ("error code: 1010"). Always send a normal client identity.
 DEFAULT_USER_AGENT = "ReidX/2 (+https://github.com/reidx; urllib)"
 
+RETRY_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+MAX_RETRIES = 4
+RETRY_BASE_DELAY = 0.5
+RETRY_MAX_DELAY = 30.0
+
 _SSL_CONTEXT: ssl.SSLContext | None = None
 
 _HTTP_HINTS: dict[int, str] = {
-    401: "Check your API key (/connect or env).",
+    401: "API key rejected — re-run /connect to re-add it (the key may have expired or been revoked).",
     403: "Check API key permissions.",
     404: "Check base URL and model name (/model, /providers).",
     429: "Wait and try again.",
@@ -126,23 +134,159 @@ def _http_error(code: int, err_body: str) -> ProviderError:
     return ProviderError(text, status_code=code)
 
 
-def post_json(url: str, payload: dict, headers: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> dict:
+def _rate_limit_exhausted_error(exc: urllib.error.HTTPError, err_body: str, retries: int) -> ProviderError:
+    """Build an actionable message after all rate-limit retries are exhausted."""
+    msg = _extract_api_message(err_body)
+    parts = [f"rate limited after {retries} retries (HTTP 429)"]
+    if msg:
+        parts.append(msg[:200])
+    parts.append(
+        "the provider's rate or daily limit is likely hit — for free models (':free' suffix), "
+        "try the paid variant (drop :free) or wait for the limit window to reset"
+    )
+    return ProviderError(" — ".join(parts), status_code=429)
+
+
+def _network_error(exc: BaseException, timeout: int) -> ProviderError:
+    """Translate a urllib/socket network failure into one clean, actionable line.
+
+    Distinguishes DNS failure, connection refused, timeout, and SSL so the user
+    gets a hint about what to fix instead of a raw `gaierror(11001, ...)`.
+    """
+    reason = getattr(exc, "reason", exc)
+    rstr = str(reason).lower()
+    if isinstance(reason, TimeoutError) or "timed out" in rstr or "timeout" in rstr:
+        return ProviderError(f"connection timed out after {timeout}s — the host is slow or unreachable")
+    errno = getattr(reason, "errno", None)
+    import socket as _socket
+    if errno == _socket.EAI_NONAME or "getaddrinfo" in rstr or "name or service not known" in rstr or "nodename" in rstr:
+        return ProviderError("could not resolve host — check the base URL and your internet connection")
+    if "connection refused" in rstr or errno in (111, 10061):
+        return ProviderError("connection refused — the host is up but not serving on that port (is the server running?)")
+    if "ssl" in rstr or "certificate" in rstr or "verify failed" in rstr:
+        return ProviderError(f"SSL/TLS error — {reason} (check the host's certificate or set REIDX_INSECURE=1 for local dev)")
+    if "network is unreachable" in rstr or errno in (101, 10051):
+        return ProviderError("network is unreachable — check your internet connection")
+    return ProviderError(f"connection error: {reason}")
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    """Parse retry delay from a 429/503 response.
+
+    Priority (mirrors OpenAI/Anthropic SDKs): retry-after-ms → retry-after as
+    float seconds → retry-after as HTTP-date. Not capped at 60s (a CLI can wait
+    a real limit window rather than burning retries).
+    """
+    ms = exc.headers.get("retry-after-ms")
+    if ms:
+        try:
+            return float(ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    val = exc.headers.get("Retry-After") or exc.headers.get("retry-after")
+    if not val:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(val)
+        if dt is not None:
+            return max(0.0, dt.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
+    """Exponential backoff with flat-multiplier jitter (OpenAI/Anthropic SDK
+    style); Retry-After from the server overrides when present."""
+    if retry_after is not None:
+        return min(retry_after, RETRY_MAX_DELAY * 2)
+    base = min(RETRY_BASE_DELAY * (2 ** attempt), RETRY_MAX_DELAY)
+    jitter = 1.0 - 0.25 * random.random()
+    return base * jitter
+
+
+def _retry_request(
+    perform: Callable[[], object],
+    *,
+    on_retry: Callable[[int, int, float], None] | None = None,
+) -> object:
+    """Run `perform()` once; on retryable HTTP errors (429/5xx), back off and retry.
+
+    `perform` must return the response object on success or raise HTTPError/URLError.
+    `on_retry(attempt, status_code, delay)` fires before each sleep so the caller
+    can surface "retrying in Ns" to the UI. Non-retryable HTTP errors propagate
+    immediately as ProviderError via _http_error.
+    """
+    last_exc: Exception | None = None
+    retries_done = 0
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return perform()
+        except urllib.error.HTTPError as exc:
+            last_exc = exc
+            if exc.code not in RETRY_STATUS_CODES or attempt >= MAX_RETRIES:
+                err_body = exc.read().decode("utf-8", errors="replace")[:500]
+                if retries_done > 0 and exc.code == 429:
+                    raise _rate_limit_exhausted_error(exc, err_body, retries_done) from None
+                raise _http_error(exc.code, err_body) from None
+            retries_done += 1
+            retry_after = _retry_after_seconds(exc)
+            delay = _backoff_delay(attempt, retry_after)
+            if on_retry is not None:
+                try:
+                    on_retry(attempt + 1, exc.code, delay)
+                except Exception:  # noqa: BLE001 - UI callback must not kill retry
+                    pass
+            time.sleep(delay)
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            transient = isinstance(reason, TimeoutError) or "timed out" in str(reason).lower()
+            if not transient or attempt >= MAX_RETRIES:
+                raise _network_error(exc, TIMEOUT_SECONDS) from None
+            delay = _backoff_delay(attempt, None)
+            if on_retry is not None:
+                try:
+                    on_retry(attempt + 1, 0, delay)
+                except Exception:  # noqa: BLE001
+                    pass
+            time.sleep(delay)
+            last_exc = exc
+    if isinstance(last_exc, urllib.error.HTTPError):
+        err_body = last_exc.read().decode("utf-8", errors="replace")[:500]
+        raise _http_error(last_exc.code, err_body) from None
+    if last_exc is not None:
+        raise _network_error(last_exc, TIMEOUT_SECONDS) from None
+    raise ProviderError("request failed with no response")
+
+
+def post_json(
+    url: str,
+    payload: dict,
+    headers: dict[str, str],
+    timeout: int = TIMEOUT_SECONDS,
+    *,
+    on_retry: Callable[[int, int, float], None] | None = None,
+) -> dict:
     """POST a JSON payload, return the parsed JSON response.
 
-    Raises ProviderError on HTTP or network errors. The agent loop soft-catches
-    those so the TUI session stays up and shows an inline error.
+    Retries 429/5xx with exponential backoff (respecting Retry-After). Raises
+    ProviderError on terminal HTTP/network errors; the agent loop soft-catches.
     """
     body = json.dumps(payload).encode("utf-8")
     hdrs = _merge_headers({"content-type": "application/json", **(headers or {})})
-    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
-    try:
+
+    def _do() -> str:
+        req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise _http_error(exc.code, err_body) from None
-    except urllib.error.URLError as exc:
-        raise ProviderError(f"connection error: {exc.reason if hasattr(exc, 'reason') else exc}") from None
+            return resp.read().decode("utf-8")
+
+    raw = _retry_request(_do, on_retry=on_retry)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -171,8 +315,7 @@ def post_form(
         err_body = exc.read().decode("utf-8", errors="replace")[:500]
         raise _http_error(exc.code, err_body) from None
     except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        raise ProviderError(f"connection error: {reason}") from None
+        raise _network_error(exc, timeout) from None
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -184,11 +327,13 @@ def iter_sse_json(
     payload: dict,
     headers: dict[str, str],
     timeout: int = TIMEOUT_SECONDS,
+    *,
+    on_retry: Callable[[int, int, float], None] | None = None,
 ):
     """POST JSON and yield parsed JSON objects from an SSE (`data: …`) stream.
 
-    Stops on `data: [DONE]`. Raises ProviderError on HTTP/network failures.
-    Used by OpenAI-compatible chat streaming (NVIDIA NIM, OpenAI, Groq, …).
+    Stops on `data: [DONE]`. Retries 429/5xx with backoff before opening the
+    stream. Raises ProviderError on terminal HTTP/network failures.
     """
     body = json.dumps(payload).encode("utf-8")
     hdrs = _merge_headers(
@@ -198,17 +343,12 @@ def iter_sse_json(
             **(headers or {}),
         }
     )
-    req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
-    try:
-        resp = urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise _http_error(exc.code, err_body) from None
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            raise ProviderError(f"connection error: timed out after {timeout}s") from None
-        raise ProviderError(f"connection error: {reason}") from None
+
+    def _do():
+        req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
+        return urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx())
+
+    resp = _retry_request(_do, on_retry=on_retry)
 
     try:
         while True:
@@ -237,24 +377,21 @@ def iter_sse_json(
             pass
 
 
-def get_json(url: str, headers: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> dict:
+def get_json(
+    url: str,
+    headers: dict[str, str],
+    timeout: int = TIMEOUT_SECONDS,
+    *,
+    on_retry: Callable[[int, int, float], None] | None = None,
+) -> dict:
     hdrs = _merge_headers(headers)
-    req = urllib.request.Request(url, headers=hdrs, method="GET")
-    try:
+
+    def _do() -> str:
+        req = urllib.request.Request(url, headers=hdrs, method="GET")
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx()) as resp:
-            # Cap body size so a multi‑MB model catalog cannot freeze the process.
-            raw = resp.read(8_000_000).decode("utf-8", errors="replace")
-    except TimeoutError:
-        raise ProviderError(f"connection error: timed out after {timeout}s") from None
-    except urllib.error.HTTPError as exc:
-        err_body = exc.read().decode("utf-8", errors="replace")[:500]
-        raise _http_error(exc.code, err_body) from None
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        # urllib wraps socket timeouts in URLError on some platforms.
-        if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
-            raise ProviderError(f"connection error: timed out after {timeout}s") from None
-        raise ProviderError(f"connection error: {reason}") from None
+            return resp.read(8_000_000).decode("utf-8", errors="replace")
+
+    raw = _retry_request(_do, on_retry=on_retry)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:

@@ -55,10 +55,10 @@ from reidx.diagnostics.logger import get_logger
 from reidx.provider_manager import (
     ACCENT,
     BG,
-    BORDER,
     ProviderDatabase,
     ProviderPalette,
 )
+from reidx.provider_manager.model_palette import ModelPalette
 from reidx.runtime.orchestrator import Orchestrator
 from reidx.ui import render
 from reidx.ui.commands import (
@@ -130,11 +130,11 @@ _UI_STYLE = Style.from_dict(
         "scrollbar.arrow": f"bg:{_MENU_BG} {PRIMARY}",
         "palette-border": f"{ACCENT}",
         "palette-bg": f"bg:{BG}",
-        "palette-header": f"bg:#1a1010 bold {ACCENT}",
-        "palette-footer": f"bg:{BG} {DIM}",
-        "palette-search": f"bg:{BG} #d0d0d0",
-        "palette-search-label": f"bg:{BG} {ACCENT}",
-        "palette-sep": f"bg:{BG} {BORDER}",
+        "palette-header": f"bg:#221518 bold {ACCENT}",
+        "palette-footer": f"bg:#181314 {DIM}",
+        "palette-search": "bg:#1d1719 #e0d8d8",
+        "palette-search-label": f"bg:#1d1719 bold {ACCENT}",
+        "palette-sep": f"bg:{BG} #3d2a2a",
         "dim-overlay": "bg:#080808",
         # Mouse drag selection highlight (transcript pane) — bright brand red.
         "selected": "bg:#ff2a2a #ffffff bold",
@@ -235,6 +235,7 @@ def _set_system_clipboard(text: str) -> bool:
                     input=b"\xff\xfe" + payload,
                     check=False,
                     capture_output=True,
+                    timeout=3,
                 )
                 if proc.returncode == 0:
                     ok = True
@@ -245,7 +246,7 @@ def _set_system_clipboard(text: str) -> bool:
         try:
             import subprocess
 
-            proc = subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False)
+            proc = subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=False, timeout=3)
             ok = proc.returncode == 0
         except Exception:  # noqa: BLE001
             pass
@@ -258,7 +259,7 @@ def _set_system_clipboard(text: str) -> bool:
             try:
                 import subprocess
 
-                proc = subprocess.run(cmd, input=text.encode("utf-8"), check=False)
+                proc = subprocess.run(cmd, input=text.encode("utf-8"), check=False, timeout=3)
                 if proc.returncode == 0:
                     ok = True
                     break
@@ -1281,6 +1282,9 @@ class ChatApp:
         self._palette_search_control: BufferControl | None = None
         self._palette_input_control: BufferControl | None = None
         self._init_palette()
+        self._model_palette: ModelPalette | None = None
+        self._model_search_control: BufferControl | None = None
+        self._init_model_palette()
         self.app: Application = Application(
             layout=self._build_layout(),
             key_bindings=self._build_key_bindings(),
@@ -1406,6 +1410,81 @@ class ChatApp:
             assert self._palette_search_control is not None
             self.app.layout.focus(self._palette_search_control)
 
+    def _init_model_palette(self) -> None:
+        if self._model_palette is not None:
+            return
+        self._model_palette = ModelPalette(
+            fetch_models=lambda: ([], None),
+            on_select=self._on_model_select,
+            on_close=self._on_model_close,
+            on_invalidate=lambda: self.app.invalidate() if self.app.is_running else None,
+            on_retry=self._fetch_models_background,
+        )
+        self._model_search_control = BufferControl(
+            buffer=self._model_palette.search_buf,
+            input_processors=[],
+        )
+
+    def _activate_model_palette(self) -> None:
+        self._init_model_palette()
+        assert self._model_palette is not None
+        state = self.orchestrator.state
+        cur = state.session.model if state else ""
+        prov = state.session.provider if state else ""
+        self._model_palette._current = cur
+        self._model_palette._provider_name = prov
+        self._model_palette.activate()
+        assert self._model_search_control is not None
+        self.app.layout.focus(self._model_search_control)
+        self._fetch_models_background()
+        self.app.invalidate()
+
+    def _fetch_models_background(self) -> None:
+        from reidx.ui.commands import fetch_provider_models
+
+        loop = self._loop
+        orch = self.orchestrator
+        palette = self._model_palette
+        gen = palette._fetch_gen if palette else 0
+
+        def _work() -> None:
+            _, models, err = fetch_provider_models(orch, use_cache=True, timeout=8)
+            if loop is not None and self.app.is_running:
+                try:
+                    loop.call_soon_threadsafe(self._deliver_models, models, err, gen)
+                except Exception:  # noqa: BLE001
+                    pass
+
+        import threading
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _deliver_models(self, models: list[str], error: str | None, gen: int = 0) -> None:
+        if self._model_palette is not None and self._model_palette.active:
+            self._model_palette.deliver_models(models, error, gen=gen)
+            self.app.invalidate()
+
+    def _on_model_select(self, model_id: str) -> None:
+        self.app.layout.focus(self._buf)
+        self._append_output(lambda: self._apply_model_choice(model_id))
+        self.app.invalidate()
+
+    def _on_model_close(self) -> None:
+        self.app.layout.focus(self._buf)
+        self.app.invalidate()
+
+    def _apply_model_choice(self, model_id: str) -> None:
+        from reidx.ui.commands import apply_model
+
+        apply_model(self.orchestrator, model_id)
+
+    def _sync_model_focus(self) -> None:
+        if self._model_palette is None or not self._model_palette.active:
+            self.app.layout.focus(self._buf)
+            return
+        assert self._model_search_control is not None
+        self.app.layout.focus(self._model_search_control)
+
     def _palette_border_top(self) -> list[tuple[str, str]]:
         if self._palette is None:
             return []
@@ -1434,27 +1513,28 @@ class ChatApp:
 
     async def _spinner_ticker(self) -> None:
         while True:
-            # Refresh faster while a palette transition is mid-flight so eased
-            # animations (unfold, selection settle) look smooth; fall back to
-            # the calm 8 fps cadence for spinners/pulses otherwise.
-            await asyncio.sleep(1 / 60 if self._palette_animating() else 0.125)
-            # Prune finished subagent rows past their linger window so the panel
-            # actually shrinks when children complete.
+            animating = self._palette_animating() or self._model_animating()
+            await asyncio.sleep(1 / 60 if animating else 0.125)
             try:
                 self.orchestrator.subagents.prune_finished()
             except AttributeError:
                 pass
+            if self._model_animating() and self._model_palette is not None:
+                self._model_palette.tick_spin()
             if (
                 self._thinking["flag"]
                 or self._approving["flag"]
                 or self._deepread_pulse_active()
                 or self._subagent_rows_visible()
-                or self._palette_animating()
+                or animating
             ):
                 self.app.invalidate()
 
     def _palette_animating(self) -> bool:
         return self._palette is not None and self._palette.is_animating()
+
+    def _model_animating(self) -> bool:
+        return self._model_palette is not None and self._model_palette.is_animating()
 
     # --- subagent panel --------------------------------------------------
 
@@ -1995,6 +2075,18 @@ class ChatApp:
                         filter=Condition(lambda: self._palette is not None and self._palette.active),
                     ),
                 ),
+                Float(
+                    left=0,
+                    top=0,
+                    width=None,
+                    height=None,
+                    content=ConditionalContainer(
+                        content=self._build_model_overlay(),
+                        filter=Condition(
+                            lambda: self._model_palette is not None and self._model_palette.active
+                        ),
+                    ),
+                ),
             ],
         )
         return Layout(floated, focused_element=input_window)
@@ -2019,16 +2111,19 @@ class ChatApp:
         def footer_frags():
             return p.footer_fragments() if p is not None else []
 
+        def _side(style: str, glyph: str = "│") -> FormattedTextControl:
+            return FormattedTextControl(lambda: [(style, glyph)])
+
         top_border = Window(
             FormattedTextControl(self._palette_border_top),
             height=1,
             style="class:palette-border",
         )
-        header = Window(
-            FormattedTextControl(header_frags),
-            height=1,
-            style="class:palette-header",
-        )
+        header = VSplit([
+            Window(_side("class:palette-header"), width=1, height=1, style="class:palette-header"),
+            Window(FormattedTextControl(header_frags), height=1, style="class:palette-header"),
+            Window(_side("class:palette-header"), width=1, height=1, style="class:palette-header"),
+        ])
         sep = Window(
             FormattedTextControl(self._palette_sep),
             height=1,
@@ -2082,15 +2177,16 @@ class ChatApp:
             ),
             filter=~is_search & ~is_input,
         )
-        content = Window(
-            FormattedTextControl(content_frags),
-            style="class:palette-bg",
-        )
-        footer = Window(
-            FormattedTextControl(footer_frags),
-            height=1,
-            style="class:palette-footer",
-        )
+        content = VSplit([
+            Window(_side("class:palette-bg"), width=1, style="class:palette-bg"),
+            Window(FormattedTextControl(content_frags), style="class:palette-bg"),
+            Window(_side("class:palette-bg"), width=1, style="class:palette-bg"),
+        ])
+        footer = VSplit([
+            Window(_side("class:palette-footer"), width=1, height=1, style="class:palette-footer"),
+            Window(FormattedTextControl(footer_frags), height=1, style="class:palette-footer"),
+            Window(_side("class:palette-footer"), width=1, height=1, style="class:palette-footer"),
+        ])
         bottom_border = Window(
             FormattedTextControl(self._palette_border_bottom),
             height=1,
@@ -2099,16 +2195,106 @@ class ChatApp:
         return HSplit([
             top_border,
             header,
-            sep,
             search_line,
             input_line,
             filler,
             sep,
             content,
-            sep,
             footer,
             bottom_border,
         ])
+
+    def _build_model_overlay(self):
+        return self._build_model_box()
+
+    def _build_model_box(self):
+        p = self._model_palette
+
+        def header_frags():
+            return p.header_fragments() if p is not None else []
+
+        def content_frags():
+            return p.content_fragments() if p is not None else []
+
+        def footer_frags():
+            return p.footer_fragments() if p is not None else []
+
+        def _side(style: str, glyph: str = "│") -> FormattedTextControl:
+            return FormattedTextControl(lambda: [(style, glyph)])
+
+        top_border = Window(
+            FormattedTextControl(self._model_border_top),
+            height=1,
+            style="class:palette-border",
+        )
+        header = VSplit([
+            Window(_side("class:palette-header"), width=1, height=1, style="class:palette-header"),
+            Window(FormattedTextControl(header_frags), height=1, style="class:palette-header"),
+            Window(_side("class:palette-header"), width=1, height=1, style="class:palette-header"),
+        ])
+        sep = Window(
+            FormattedTextControl(self._model_sep),
+            height=1,
+            style="class:palette-sep",
+        )
+        search_line = VSplit([
+            Window(
+                FormattedTextControl(
+                    lambda: [("class:palette-search-label", f"│{p.search_label()}")]
+                ),
+                width=5,
+                height=1,
+            ),
+            Window(
+                self._model_search_control,
+                height=1,
+                style="class:palette-search",
+            ),
+            Window(
+                FormattedTextControl(lambda: [("class:palette-search", "│")]),
+                width=1,
+                height=1,
+            ),
+        ])
+        content = VSplit([
+            Window(_side("class:palette-bg"), width=1, style="class:palette-bg"),
+            Window(FormattedTextControl(content_frags), style="class:palette-bg"),
+            Window(_side("class:palette-bg"), width=1, style="class:palette-bg"),
+        ])
+        footer = VSplit([
+            Window(_side("class:palette-footer"), width=1, height=1, style="class:palette-footer"),
+            Window(FormattedTextControl(footer_frags), height=1, style="class:palette-footer"),
+            Window(_side("class:palette-footer"), width=1, height=1, style="class:palette-footer"),
+        ])
+        bottom_border = Window(
+            FormattedTextControl(self._model_border_bottom),
+            height=1,
+            style="class:palette-border",
+        )
+        return HSplit([
+            top_border,
+            header,
+            search_line,
+            sep,
+            content,
+            footer,
+            bottom_border,
+        ])
+
+    def _model_border_top(self) -> list[tuple[str, str]]:
+        if self._model_palette is None:
+            return []
+        return self._model_palette.border_top_fragments()
+
+    def _model_border_bottom(self) -> list[tuple[str, str]]:
+        if self._model_palette is None:
+            return []
+        return self._model_palette.border_bottom_fragments()
+
+    def _model_sep(self) -> list[tuple[str, str]]:
+        if self._model_palette is None:
+            return []
+        return self._model_palette.separator_fragments()
 
     # --- input handling --------------------------------------------------
 
@@ -2118,11 +2304,15 @@ class ChatApp:
         is_approving = Condition(lambda: self._approving["flag"])
         is_buffer_empty = Condition(lambda: not self._buf.text)
         is_palette = Condition(lambda: self._palette is not None and self._palette.active)
+        is_model = Condition(
+            lambda: self._model_palette is not None and self._model_palette.active
+        )
         is_completing = Condition(lambda: self._buf.complete_state is not None)
         can_edit = Condition(
             lambda: not self._thinking["flag"]
             and not self._approving["flag"]
             and not (self._palette is not None and self._palette.active)
+            and not (self._model_palette is not None and self._model_palette.active)
         )
 
         @kb.add("up", filter=is_palette)
@@ -2150,7 +2340,43 @@ class ChatApp:
             self._palette.deactivate()
             self._sync_palette_focus()
 
-        @kb.add("enter", filter=~is_thinking & ~is_approving & ~is_palette)
+        @kb.add("up", filter=is_model)
+        def _model_up(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.on_up()
+            self._sync_model_focus()
+
+        @kb.add("down", filter=is_model)
+        def _model_down(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.on_down()
+            self._sync_model_focus()
+
+        @kb.add("enter", filter=is_model)
+        def _model_enter(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.on_enter()
+            self._sync_model_focus()
+
+        @kb.add("escape", filter=is_model)
+        def _model_escape(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.on_escape()
+            self._sync_model_focus()
+
+        @kb.add("c-c", filter=is_model)
+        def _model_cancel(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.deactivate()
+            self._sync_model_focus()
+
+        is_model_error = Condition(
+            lambda: self._model_palette is not None
+            and self._model_palette.active
+            and self._model_palette._state == "error"
+        )
+
+        @kb.add("r", filter=is_model_error)
+        def _model_retry(event) -> None:  # type: ignore[no-untyped-def]
+            self._model_palette.retry()
+            self._sync_model_focus()
+
+        @kb.add("enter", filter=~is_thinking & ~is_approving & ~is_palette & ~is_model)
         async def _submit(event) -> None:  # type: ignore[no-untyped-def]
             buf = event.current_buffer
             # Menu open → auto-fill highlighted (or first) option; does not
@@ -2442,6 +2668,8 @@ class ChatApp:
                 self.app.exit(result=0)
             elif outcome == "connect":
                 self._activate_palette()
+            elif outcome == "model":
+                self._activate_model_palette()
             elif outcome == "copy-last":
                 self._copy_last_assistant()
             elif outcome.startswith("workflow-run:"):
@@ -2491,6 +2719,16 @@ class ChatApp:
             # Fallback if loop not ready (shouldn't happen mid-turn).
             _append_stream_chunk(chunk)
 
+        def _on_status(msg: str) -> None:
+            loop = self._loop
+            if loop is not None and self.app.is_running:
+                try:
+                    loop.call_soon_threadsafe(
+                        lambda: self._append_output(lambda: render.print_info(msg))
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
         try:
             result = await self._loop.run_in_executor(
                 None,
@@ -2500,6 +2738,7 @@ class ChatApp:
                     approver=approver,
                     cancel=cancel_event.is_set,
                     on_text_delta=_on_text_delta,
+                    on_status=_on_status,
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - the TUI must not die on runtime errors
@@ -2520,6 +2759,14 @@ class ChatApp:
     def _run_slash(self, text: str) -> str:
         if text.strip() == "/clear":
             self.output.reset()
+            self._append_output(render.banner)
+            st = self.orchestrator.state
+            if st is not None and st.session.provider != "stub":
+                self._append_output(
+                    lambda: render.print_info(
+                        f"provider: {st.session.provider} · model: {st.session.model or '(default)'}"
+                    )
+                )
             if self.app.is_running:
                 self.app.invalidate()
             return "continue"
@@ -2598,9 +2845,12 @@ def run(orchestrator: Orchestrator, initial_prompt: str | None = None) -> int:
         chat = ChatApp(orchestrator, initial_prompt=initial_prompt)
         original_console = render.console
         render.console = chat.capture.console
+        code = 0
         try:
             chat.start()
             code = asyncio.run(chat.main())
+        except KeyboardInterrupt:
+            code = 0
         finally:
             render.console = original_console
         try:

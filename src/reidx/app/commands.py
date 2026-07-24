@@ -160,7 +160,15 @@ def deepreid(
         render.print_error('usage: reid deepreid "<task>" (or --file <path>)')
         raise typer.Exit(code=1)
     cfg = ConfigLoader().load()
-    provider = default_registry(cfg).get(cfg.default_provider)
+    from reidx.provider.registry import pick_startup_provider
+
+    reg = default_registry(cfg)
+    name = pick_startup_provider(reg, cfg.default_provider)
+    try:
+        provider = reg.get(name)
+    except KeyError as exc:
+        render.print_error(f"{exc} — connect a provider first with /connect or set an API key env var")
+        raise typer.Exit(code=1) from exc
     result = run_deepreid(cfg, provider, Path.cwd(), resolved, on_progress=render.print_info)
     path = save_deepreid_result(cfg, result)
     console.print(format_markdown(result))

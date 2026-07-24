@@ -43,6 +43,7 @@ _USER_AGENT = (
 _HEADERS = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip"}
 _TIMEOUT_SECONDS = 10
 _CACHE_TTL_SECONDS = 300
+_CACHE_MAX = 64
 
 # DuckDuckGo's HTML results: <a class="result__a" href="...">title</a> ... <a class="result__snippet" ...>snippet</a>
 _RESULT_RE = re.compile(
@@ -203,6 +204,9 @@ class WebSearchTool(BaseTool):
             return ToolResult.fail(f"web search failed: {exc}")
 
         self._cache[cache_key] = (time.monotonic(), results)
+        if len(self._cache) > _CACHE_MAX:
+            oldest = min(self._cache, key=lambda k: self._cache[k][0])
+            self._cache.pop(oldest, None)
         return self._format(query, results)
 
     def _format(self, query: str, results: list[dict[str, str]]) -> ToolResult:

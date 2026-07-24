@@ -62,7 +62,7 @@ def test_openai_chat_stream_accumulates_and_callbacks() -> None:
     provider = OpenAICompatibleProvider(api_key="k", base_url="https://example.com/v1")
     deltas: list[str] = []
 
-    def _fake_sse(url, payload, headers, timeout=120):
+    def _fake_sse(url, payload, headers, timeout=120, **kwargs):
         assert payload.get("stream") is True
         yield {
             "choices": [
@@ -93,7 +93,7 @@ def test_openai_chat_stream_accumulates_and_callbacks() -> None:
 def test_openai_chat_stream_tool_calls() -> None:
     provider = OpenAICompatibleProvider(api_key="k", base_url="https://example.com/v1")
 
-    def _fake_sse(url, payload, headers, timeout=120):
+    def _fake_sse(url, payload, headers, timeout=120, **kwargs):
         yield {
             "choices": [
                 {
@@ -135,13 +135,13 @@ def test_agent_stream_auto_uses_stream_when_supported(tmp_path: Path) -> None:
         supports_streaming = True
         streamed = False
 
-        def chat_stream(self, messages, tools=None, model=None, *, on_text_delta=None):
+        def chat_stream(self, messages, tools=None, model=None, *, on_text_delta=None, **kwargs):
             self.streamed = True
             if on_text_delta:
                 on_text_delta("chunk")
             return ProviderResponse(text="chunk-done")
 
-        def chat(self, messages, tools=None, model=None):
+        def chat(self, messages, tools=None, model=None, **kwargs):
             raise AssertionError("should use chat_stream in auto mode")
 
     cfg = default_config()

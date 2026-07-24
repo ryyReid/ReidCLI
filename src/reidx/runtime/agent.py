@@ -33,6 +33,7 @@ log = get_logger("reidx.agent")
 # Allow enough tool rounds for multi-file investigation without burning out
 # on "step budget exhausted" after a short explore (was 8).
 MAX_STEPS = 16
+_MAX_RETRIES_TOTAL = 5
 # Prefix used by orchestrator/UI to detect soft provider failures without
 # relying on exception propagation through the TUI worker thread.
 PROVIDER_ERROR_PREFIX = "[provider error] "
@@ -158,6 +159,7 @@ class Agent:
         max_steps: int = MAX_STEPS,
         cancel: Callable[[], bool] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> tuple[str, list[dict]]:
         """Execute one user turn. Returns (final_text, tool_result_log).
 
@@ -181,6 +183,20 @@ class Agent:
         state.last_thinking = None  # fresh per turn; the UI reads it after run_turn
         use_stream = self._should_stream(state)
 
+        def _on_retry(attempt: int, status_code: int, delay: float) -> None:
+            if on_status is None:
+                return
+            if status_code == 429:
+                msg = f"rate limited (429) — retrying in {delay:.1f}s (attempt {attempt}/{_MAX_RETRIES_TOTAL})"
+            elif status_code == 0:
+                msg = f"connection error — retrying in {delay:.1f}s (attempt {attempt}/{_MAX_RETRIES_TOTAL})"
+            else:
+                msg = f"transient {status_code} — retrying in {delay:.1f}s (attempt {attempt}/{_MAX_RETRIES_TOTAL})"
+            try:
+                on_status(msg)
+            except Exception:  # noqa: BLE001
+                pass
+
         for _step in range(max_steps):
             if cancel is not None and cancel():
                 final_text = final_text or "[cancelled by user]"
@@ -192,10 +208,14 @@ class Agent:
                         self.tools.schemas(),
                         state.session.model,
                         on_text_delta=on_text_delta,
+                        on_retry=_on_retry,
                     )
                 else:
                     resp = self.provider.chat(
-                        state.messages, self.tools.schemas(), state.session.model
+                        state.messages,
+                        self.tools.schemas(),
+                        state.session.model,
+                        on_retry=_on_retry,
                     )
             except ProviderError as exc:
                 # Soft crash: one clean Error line in the TUI. Do not log to the

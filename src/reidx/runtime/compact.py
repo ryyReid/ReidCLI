@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from reidx.diagnostics.logger import get_logger
-from reidx.provider.base import BaseProvider, Message, ProviderError
+from reidx.provider.base import BaseProvider, Message
 
 log = get_logger("reidx.compact")
 
@@ -152,11 +152,11 @@ def llm_summary(
         if m.tool_calls:
             names = ", ".join(tc.name for tc in m.tool_calls)
             chunk += f" [tools: {names}]"
-        if size + len(chunk) > MAX_SOURCE_CHARS_FOR_LLM:
+        if size + len(chunk[:1500]) > MAX_SOURCE_CHARS_FOR_LLM:
             blob_parts.append("…(earlier messages omitted for length)")
             break
         blob_parts.append(chunk[:1500])
-        size += len(chunk)
+        size += len(chunk[:1500])
     blob = "\n\n".join(blob_parts)
     if not blob.strip():
         return None
@@ -176,7 +176,7 @@ def llm_summary(
             tools=None,
             model=model,
         )
-    except (ProviderError, Exception) as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         log.debug("llm summary failed: %s", exc)
         return None
     text = (resp.text or "").strip()

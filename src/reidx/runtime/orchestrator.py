@@ -230,6 +230,7 @@ class Orchestrator:
         title: str | None = None,
         cancel: Callable[[], bool] | None = None,
         on_text_delta: Callable[[str], None] | None = None,
+        on_status: Callable[[str], None] | None = None,
     ) -> dict:
         """Run one user turn against the agent, tracking it as a Task.
 
@@ -292,6 +293,7 @@ class Orchestrator:
             approver=approver,
             cancel=cancel,
             on_text_delta=on_text_delta,
+            on_status=on_status,
         )
 
         # Persist new messages incrementally for restorable resume.

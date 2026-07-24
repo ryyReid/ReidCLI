@@ -1,12 +1,12 @@
-"""OpenCode Go router provider.
+"""OpenCode Zen router provider.
 
-OpenCode Go's Zen subscription exposes two different wire protocols behind a
+OpenCode's Zen subscription exposes two different wire protocols behind a
 single key and origin:
 
   - OpenAI-compatible chat/completions — GLM, Kimi, DeepSeek, MiMo
-    (`.../zen/go/v1/chat/completions`)
+    (`.../zen/v1/chat/completions`)
   - Anthropic Messages — MiniMax, Qwen
-    (`.../zen/go/v1/messages`)
+    (`.../zen/v1/messages`)
 
 Rather than make the user pick the right one of two near-identical catalog
 rows, this provider presents as a single backend and routes each request to
@@ -23,7 +23,7 @@ from reidx.provider.anthropic import AnthropicProvider
 from reidx.provider.base import BaseProvider, Message, ProviderResponse
 from reidx.provider.openai import OpenAICompatibleProvider
 
-DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
+DEFAULT_BASE_URL = "https://opencode.ai/zen/v1"
 DEFAULT_MODEL = "glm-5.2"
 
 # Model-id fragments served by the Anthropic Messages endpoint. Everything
@@ -40,7 +40,7 @@ def _anthropic_base(oai_base: str) -> str:
     """Derive the Anthropic origin from the OpenAI-compatible base URL.
 
     `AnthropicProvider` appends `/v1/messages`, so we strip a trailing `/v1`
-    from the OpenAI root: `.../zen/go/v1` → `.../zen/go`.
+    from the OpenAI root: `.../zen/v1` → `.../zen`.
     """
     base = (oai_base or DEFAULT_BASE_URL).rstrip("/")
     return re.sub(r"/v1$", "", base) or base
@@ -82,9 +82,11 @@ class OpenCodeGoProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        *,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         model = model or self.default_model
-        return self._route(model).chat(messages, tools, model)
+        return self._route(model).chat(messages, tools, model, on_retry=on_retry)
 
     def chat_stream(
         self,
@@ -93,12 +95,11 @@ class OpenCodeGoProvider(BaseProvider):
         model: str | None = None,
         *,
         on_text_delta: Any | None = None,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         model = model or self.default_model
-        # OpenAI path streams token-by-token; the Anthropic sub-client inherits
-        # BaseProvider.chat_stream (one full-text emit), which is fine here.
         return self._route(model).chat_stream(
-            messages, tools, model, on_text_delta=on_text_delta
+            messages, tools, model, on_text_delta=on_text_delta, on_retry=on_retry
         )
 
     def fetch_models(self, *, timeout: int = MODELS_TIMEOUT_SECONDS) -> list[str]:

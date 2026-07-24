@@ -19,7 +19,6 @@ from rich.text import Text
 from reidx.config.storage import storage_root
 from reidx.goals.models import Goal, GoalNodeKind, GoalStatus
 from reidx.policy.models import PermissionMode
-from reidx.provider.models import denormalize_model_id, normalize_model_id
 from reidx.provider.store import (
     SUPPORTED_KINDS,
     ProviderRecord,
@@ -540,7 +539,6 @@ def _providers_store(orchestrator: Orchestrator) -> ProviderStore:
 
 
 def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> None:
-    from reidx.provider.models import denormalize_model_id, normalize_model_id
     from reidx.provider_manager import keychain
     from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
 
@@ -561,11 +559,7 @@ def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> Non
         existing.base_url = record.base_url
         existing.auth_method = record.auth_method
         if record.default_model:
-            normalized = normalize_model_id(record.default_model, provider_name=record.name)
-            if normalized.is_valid:
-                existing.default_model = denormalize_model_id(normalized)
-            else:
-                existing.default_model = record.default_model
+            existing.default_model = record.default_model
         db.save_provider(existing)
     else:
         sp = StoredProvider(
@@ -580,12 +574,6 @@ def _save_to_database(orchestrator: Orchestrator, record: ProviderRecord) -> Non
             )
             sp.keys.append(k)
             sp.active_key_id = k.id
-        if record.default_model:
-            normalized = normalize_model_id(record.default_model, provider_name=record.name)
-            if normalized.is_valid:
-                sp.default_model = denormalize_model_id(normalized)
-            else:
-                sp.default_model = record.default_model
         db.save_provider(sp)
 
 
@@ -666,12 +654,10 @@ def _handle_connect(orchestrator: Orchestrator, arg: str) -> None:
         except Exception:
             models = []
         if models:
-            normalized = normalize_model_id(models[0], provider_name=name)
-            if normalized.is_valid:
-                model = denormalize_model_id(normalized)
-                provider.default_model = model
-                record.default_model = model
-                render.print_info(f"auto-detected model: {model}")
+            model = models[0]
+            provider.default_model = model
+            record.default_model = model
+            render.print_info(f"auto-detected model: {model}")
     _providers_store(orchestrator).save(record)
     _save_to_database(orchestrator, record)
     if orchestrator.providers is not None:
@@ -692,9 +678,13 @@ def _handle_disconnect(orchestrator: Orchestrator, arg: str) -> None:
     if not name:
         render.print_error("usage: /disconnect <name>")
         return
-    if name in _BUILTIN_PROVIDER_NAMES:
+    if name.lower() in {n.lower() for n in _BUILTIN_PROVIDER_NAMES}:
         render.print_error(f"cannot disconnect built-in provider '{name}'")
         return
+    if orchestrator.providers is not None:
+        resolved = orchestrator.providers.resolve(name)
+        if resolved:
+            name = resolved
     active = orchestrator.state.session.provider if orchestrator.state else ""
     if name == active:
         render.print_error(f"'{name}' is active; /use stub first, then disconnect")
@@ -860,47 +850,71 @@ def _print_model_catalog(orchestrator: Orchestrator) -> None:
         )
 
 
+def apply_model(orchestrator: Orchestrator, name: str) -> None:
+    """Set the active session's model and persist it. Shared by /model <id>
+    and the interactive model picker so both stay in sync."""
+    if orchestrator.state is None:
+        render.print_error("no active session")
+        return
+    from reidx.config.settings import persist_default_model
+    from reidx.provider.context_windows import (
+        bind_model_context,
+        fmt_context_window,
+    )
+
+    provider_name = orchestrator.state.session.provider
+    active_kind = getattr(orchestrator.provider, "name", "")
+    if active_kind == "stub":
+        render.print_error(
+            f"active provider is 'stub' (offline) — connect a real one first: /use <provider>  "
+            f"(model '{name}' noted but won't run until you /use a real provider)"
+        )
+    prefix = name.split("/", 1)[0].lower() if "/" in name else ""
+    persist = True
+    if prefix and orchestrator.providers is not None:
+        resolved_prefix = orchestrator.providers.resolve(prefix)
+        if resolved_prefix and resolved_prefix.lower() != provider_name.lower():
+            render.print_error(
+                f"'{prefix}' is a different provider than '{provider_name}' — switching to {resolved_prefix}"
+            )
+            try:
+                orchestrator.use_provider(resolved_prefix)
+                provider_name = resolved_prefix
+                remaining = name.split("/", 1)[1] if "/" in name else name
+                name = remaining
+            except Exception as exc:  # noqa: BLE001
+                render.print_error(f"could not switch: {exc}")
+                persist = False
+    orchestrator.state.session.model = name
+    if getattr(orchestrator.provider, "default_model", None) is not None:
+        orchestrator.provider.default_model = name
+    if provider_name in orchestrator.config.providers:
+        orchestrator.config.providers[provider_name].default_model = name
+    window = bind_model_context(name, orchestrator.provider, network=True, timeout=4)
+    orchestrator.state.session.context_window = window
+    orchestrator.session_store.update(orchestrator.state.session)
+    written = persist_default_model(name, provider_name=provider_name) if persist else None
+    note = "saved" if written else "session only"
+    render.print_info(
+        f"model → {name}  ·  context {fmt_context_window(window)}  ({note})"
+    )
+
+
 def _handle_model(orchestrator: Orchestrator, arg: str) -> None:
     """Set or list models.
 
-    `/model` or `/model list`  — show catalog (8s timeout, cached)
+    `/model` or `/model list`  — open the picker (or show catalog in non-TUI)
     `/model <id>`              — set model immediately (no network)
     """
     if orchestrator.state is None:
         render.print_error("usage: /model [name|list] (with an active session)")
         return
     name = arg.strip()
-    from reidx.provider.context_windows import (
-        bind_model_context,
-        fmt_context_window,
-    )
 
-    # Bare /model or explicit list → show the catalog.
     if not name or name.lower() in ("list", "ls", "--list"):
-        _print_model_catalog(orchestrator)
-        return
+        return "model"
 
-    # Set model — context window auto-updates from known table + provider /models.
-    orchestrator.state.session.model = name
-    provider_name = orchestrator.state.session.provider
-    if getattr(orchestrator.provider, "default_model", None) is not None:
-        orchestrator.provider.default_model = name
-    if provider_name in orchestrator.config.providers:
-        orchestrator.config.providers[provider_name].default_model = name
-    from reidx.config.settings import persist_default_model
-
-    # Seeds known ids instantly (glm-5.2 → 1M); short API probe for hosts that
-    # return context_length on /models (won't hang long on OpenCode-style lists).
-    window = bind_model_context(
-        name, orchestrator.provider, network=True, timeout=4
-    )
-    orchestrator.state.session.context_window = window
-    orchestrator.session_store.update(orchestrator.state.session)
-    written = persist_default_model(name, provider_name=provider_name)
-    note = "saved" if written else "session only"
-    render.print_info(
-        f"model → {name}  ·  context {fmt_context_window(window)}  ({note})"
-    )
+    apply_model(orchestrator, name)
 
 
 def _handle_models(orchestrator: Orchestrator, arg: str) -> None:
@@ -917,10 +931,11 @@ def _handle_models(orchestrator: Orchestrator, arg: str) -> None:
         return
 
     if provider_filter:
-        if provider_filter not in provider_names:
+        resolved = orchestrator.providers.resolve(provider_filter)
+        if not resolved:
             render.print_error(f"provider '{provider_filter}' not registered (see /providers)")
             return
-        provider_names = [provider_filter]
+        provider_names = [resolved]
 
     for name in provider_names:
         _pname, models, err = fetch_provider_models(orchestrator, name)
@@ -1047,7 +1062,9 @@ def handle(orchestrator: Orchestrator, line: str) -> str:
             n = int(arg) if arg.isdigit() else 20
             render.print_transcript(orchestrator.state.messages, n)
     elif cmd == "model":
-        _handle_model(orchestrator, arg)
+        outcome = _handle_model(orchestrator, arg)
+        if outcome == "model":
+            return "model"
     elif cmd == "effort":
         if orchestrator.state is None:
             render.print_error(

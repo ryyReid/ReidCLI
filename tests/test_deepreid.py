@@ -44,7 +44,7 @@ class _RoleAwareProvider(BaseProvider):
         self.planner_calls = 0
         self.critic_calls = 0
 
-    def chat(self, messages, tools=None, model=None) -> ProviderResponse:  # type: ignore[no-untyped-def]
+    def chat(self, messages, tools=None, model=None, **kwargs) -> ProviderResponse:  # type: ignore[no-untyped-def]
         system = messages[0].content if messages and messages[0].role == "system" else ""
         if system.startswith("You are the Critic"):
             self.critic_calls += 1
@@ -90,7 +90,7 @@ class _EndlessToolCallProvider(BaseProvider):
     def __init__(self) -> None:
         self.chat_calls = 0
 
-    def chat(self, messages, tools=None, model=None) -> ProviderResponse:  # type: ignore[no-untyped-def]
+    def chat(self, messages, tools=None, model=None, **kwargs) -> ProviderResponse:  # type: ignore[no-untyped-def]
         self.chat_calls += 1
         # No accompanying text -- matches real tool-call-only responses (the
         # observed failure had *no* text at any step, which is exactly what

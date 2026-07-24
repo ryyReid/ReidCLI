@@ -20,6 +20,8 @@ class StubProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        *,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         last = next((m for m in reversed(messages) if m.role == "user"), None)
         text = (last.content if last else "").lower()

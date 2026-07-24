@@ -143,6 +143,8 @@ class AnthropicProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        *,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         model = model or self.default_model or "claude-sonnet-4-20250514"
         system, anthropic_msgs = self._to_anthropic_messages(messages)
@@ -159,9 +161,7 @@ class AnthropicProvider(BaseProvider):
             payload["tools"] = anthropic_tools
 
         url = f"{self.base_url}/v1/messages"
-        # ProviderError/network failures soft-caught by Agent.run_turn — no
-        # console logging here (stderr corrupts the full-screen TUI).
-        body = post_json(url, payload, self._headers())
+        body = post_json(url, payload, self._headers(), on_retry=on_retry)
         return self._parse_response(body, model)
 
     def fetch_models(self, *, timeout: int = MODELS_TIMEOUT_SECONDS) -> list[str]:

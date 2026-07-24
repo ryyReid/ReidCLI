@@ -71,6 +71,7 @@ class BaseProvider(ABC):
         model: str | None = None,
         *,
         on_text_delta: Any | None = None,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         """Stream a model turn; call `on_text_delta(str)` for each content chunk.
 
@@ -78,7 +79,7 @@ class BaseProvider(ABC):
         the full text once. Providers that set `supports_streaming = True`
         should override with real SSE streaming.
         """
-        resp = self.chat(messages, tools, model)
+        resp = self.chat(messages, tools, model, on_retry=on_retry)
         if on_text_delta is not None and resp.text:
             on_text_delta(resp.text)
         return resp

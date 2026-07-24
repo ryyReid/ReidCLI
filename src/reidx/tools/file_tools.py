@@ -144,7 +144,10 @@ class PatchFileTool(BaseTool):
             return ToolResult.fail("find string is empty")
         if not path.exists():
             return ToolResult.fail(f"not a file: {path}")
-        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            return ToolResult.fail(f"file is not valid UTF-8; patch_file cannot safely edit it: {exc}")
         count = text.count(find)
         if count == 0:
             return ToolResult.fail("find string not present")
@@ -243,7 +246,17 @@ class FindFilesTool(BaseTool):
         blocked = _safe_read(base, ctx)
         if blocked:
             return blocked
-        matches = sorted(str(p.relative_to(ctx.workspace_root)) for p in base.glob(pattern) if p.is_file())
+        root = ctx.workspace_root.resolve()
+        matches: list[str] = []
+        for p in base.glob(pattern):
+            if not p.is_file():
+                continue
+            try:
+                rel = p.resolve().relative_to(root)
+            except ValueError:
+                continue
+            matches.append(str(rel))
+        matches.sort()
         return ToolResult.ok_("\n".join(matches), count=len(matches))
 
 
@@ -263,13 +276,18 @@ class GrepFilesTool(BaseTool):
         except re.error as exc:
             return ToolResult.fail(f"bad regex: {exc}")
         hits: list[str] = []
+        root = ctx.workspace_root.resolve()
         for p in base.rglob("*"):
             if not p.is_file():
                 continue
             try:
+                rel = p.resolve().relative_to(root)
+            except ValueError:
+                continue
+            try:
                 for i, line in enumerate(p.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
                     if rx.search(line):
-                        hits.append(f"{p.relative_to(ctx.workspace_root)}:{i}: {line.strip()}")
+                        hits.append(f"{rel}:{i}: {line.strip()}")
             except OSError:
                 continue
             if len(hits) >= 200:

@@ -26,6 +26,7 @@ class _FailingProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        **kwargs: Any,
     ) -> ProviderResponse:
         raise ProviderError(
             "HTTP 404: Application not found — Check base URL and model name (/model, /providers).",

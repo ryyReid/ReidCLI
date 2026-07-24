@@ -542,8 +542,11 @@ def refresh_context_from_provider(
                         remember_context(iid, n, from_api=True)
                         return n
             return context_window_for(mid)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        from reidx.diagnostics.logger import get_logger
+        get_logger("reidx.provider.context_windows").debug(
+            "refresh_context_from_provider failed for %r: %s", mid, exc
+        )
 
     return context_window_for(mid)
 

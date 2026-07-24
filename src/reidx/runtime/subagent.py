@@ -130,17 +130,14 @@ class SubagentManager:
         """Rows to actually render — running + recently-finished (linger)."""
         now = time.monotonic()
         with self._lock:
-            keep: list[_Row] = []
-            for row in self._rows.values():
-                if row.status == "running" or row.linger_until > now:
-                    keep.append(row)
-        return [
-            SubagentSnapshot(
-                id=r.id, name=r.name, status=r.status, started_at=r.started_at,
-                last_action=r.last_action, finished_at=r.finished_at, error=r.error,
-            )
-            for r in keep
-        ]
+            return [
+                SubagentSnapshot(
+                    id=r.id, name=r.name, status=r.status, started_at=r.started_at,
+                    last_action=r.last_action, finished_at=r.finished_at, error=r.error,
+                )
+                for r in self._rows.values()
+                if r.status == "running" or r.linger_until > now
+            ]
 
     def prune_finished(self) -> bool:
         """Drop finished rows past their linger window. Returns True if any

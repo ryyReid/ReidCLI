@@ -56,3 +56,32 @@ def test_patch_requires_unique_match(tmp_path: Path) -> None:
     # Unique match -> ok.
     r = reg.dispatch("patch_file", {"path": "f.txt", "find": "bbb", "replace": "ccc"}, ctx)
     assert r.ok
+
+
+def test_patch_refuses_non_utf8_file(tmp_path: Path) -> None:
+    reg = default_registry()
+    ctx = _ctx(tmp_path)
+    (tmp_path / "bin.dat").write_bytes(b"\xff\xfe binary \x00 stuff target \x80")
+    r = reg.dispatch("patch_file", {"path": "bin.dat", "find": "target", "replace": "hit"}, ctx)
+    assert not r.ok
+    assert "UTF-8" in r.error
+    assert b"target" in (tmp_path / "bin.dat").read_bytes()
+
+
+def test_find_files_skips_outside_workspace(tmp_path: Path) -> None:
+    reg = default_registry()
+    ctx = _ctx(tmp_path)
+    (tmp_path / "inside.txt").write_text("hello")
+    r = reg.dispatch("find_files", {"pattern": "*.txt"}, ctx)
+    assert r.ok
+    assert "inside.txt" in r.output
+
+
+def test_grep_does_not_crash_on_symlink_escape(tmp_path: Path) -> None:
+    reg = default_registry()
+    ctx = _ctx(tmp_path)
+    (tmp_path / "match.txt").write_text("needle here")
+    r = reg.dispatch("grep_files", {"pattern": "needle"}, ctx)
+    assert r.ok
+    assert "match.txt" in r.output
+

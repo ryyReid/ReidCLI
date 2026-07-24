@@ -136,6 +136,8 @@ class OpenAIProvider(BaseProvider):
         messages: list[Message],
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        *,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         model = model or self.default_model
         payload: dict[str, Any] = {
@@ -145,9 +147,7 @@ class OpenAIProvider(BaseProvider):
         if tools:
             payload["tools"] = tools
         url = f"{self.base_url}/chat/completions"
-        # ProviderError soft-caught by Agent.run_turn — no console logging
-        # (stderr corrupts the full-screen TUI).
-        body = post_json(url, payload, self._headers())
+        body = post_json(url, payload, self._headers(), on_retry=on_retry)
         return self._parse(body, model)
 
     def chat_stream(
@@ -157,6 +157,7 @@ class OpenAIProvider(BaseProvider):
         model: str | None = None,
         *,
         on_text_delta: Any | None = None,
+        on_retry: Any | None = None,
     ) -> ProviderResponse:
         """OpenAI-compatible SSE stream (`stream: true`).
 
@@ -226,7 +227,7 @@ class OpenAIProvider(BaseProvider):
 
         stream_error: ProviderError | None = None
         try:
-            _consume(iter_sse_json(url, payload, self._headers()))
+            _consume(iter_sse_json(url, payload, self._headers(), on_retry=on_retry))
         except ProviderError as exc:
             msg = str(exc).lower()
             # Retry once only when stream_options is likely unsupported — not on 401/403.
@@ -246,7 +247,7 @@ class OpenAIProvider(BaseProvider):
             if retryable:
                 payload.pop("stream_options", None)
                 try:
-                    _consume(iter_sse_json(url, payload, self._headers()))
+                    _consume(iter_sse_json(url, payload, self._headers(), on_retry=on_retry))
                 except ProviderError as exc2:
                     stream_error = exc2
             else:

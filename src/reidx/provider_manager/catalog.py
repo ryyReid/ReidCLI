@@ -86,7 +86,7 @@ ProviderDefinition(
     ),
     ProviderDefinition(
         id="cohere", name="Cohere", description="Command R+ and Aya models for enterprise",
-        kind="openai-compatible", base_url="https://api.cohere.ai/v1",
+        kind="openai-compatible", base_url="https://api.cohere.ai/compatibility/v1",
         default_model="command-r-plus-08-2024", aliases=[], icon="COH",
     ),
     ProviderDefinition(
@@ -125,8 +125,8 @@ ProviderDefinition(
         aliases=["azure"], icon="AZO",
     ),
     ProviderDefinition(
-        id="huggingface", name="HuggingFace", description="Inference API for 100k+ models",
-        kind="openai-compatible", base_url="https://api-inference.huggingface.co/v1",
+        id="huggingface", name="HuggingFace", description="Inference router for 100k+ models",
+        kind="openai-compatible", base_url="https://router.huggingface.co/v1",
         default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["hf"], icon="HF",
     ),
     ProviderDefinition(
@@ -136,17 +136,17 @@ ProviderDefinition(
     ),
     ProviderDefinition(
         id="novita", name="Novita", description="Affordable API for 100+ open models",
-        kind="openai-compatible", base_url="https://api.novita.ai/v3/openai",
+        kind="openai-compatible", base_url="https://api.novita.ai/openai/v1",
         default_model="meta-llama/llama-3.1-70b-instruct", aliases=[], icon="NVT",
     ),
     ProviderDefinition(
         id="featherless", name="Featherless", description="Serverless inference for open models",
-        kind="openai-compatible", base_url="https://api.featherless.ai/v1/openai",
+        kind="openai-compatible", base_url="https://api.featherless.ai/v1",
         default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="FTL",
     ),
     ProviderDefinition(
         id="chutes", name="Chutes", description="GPU-accelerated inference for AI workloads",
-        kind="openai-compatible", base_url="https://api.chutes.ai/v1",
+        kind="openai-compatible", base_url="https://llm.chutes.ai/v1",
         default_model="deepseek-ai/DeepSeek-V3", aliases=[], icon="CHT",
     ),
     ProviderDefinition(
@@ -179,16 +179,12 @@ ProviderDefinition(
         kind="openai-compatible", base_url="https://integrate.api.nvidia.com/v1",
         default_model="meta/llama-3.1-70b-instruct", aliases=["nvidia"], icon="NVD",
     ),
-    # OpenCode Go (https://opencode.ai/go) — Zen subscription. One entry that
-    # auto-routes per model: GLM/Kimi/DeepSeek/MiMo over OpenAI-compatible
-    # chat/completions, MiniMax/Qwen over the Anthropic Messages endpoint.
-    # See reidx.provider.opencode_go.OpenCodeGoProvider.
     ProviderDefinition(
         id="opencode-go",
         name="OpenCode Go",
-        description="OpenCode Zen Go — GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen (auto-routed)",
+        description="OpenCode Zen — GLM, Kimi, DeepSeek, MiMo, MiniMax, Qwen (auto-routed)",
         kind="opencode-go",
-        base_url="https://opencode.ai/zen/go/v1",
+        base_url="https://opencode.ai/zen/v1",
         default_model="glm-5.2",
         aliases=[
             "opencode", "opencode-go", "zen-go", "go", "opencodigo",
@@ -199,19 +195,22 @@ ProviderDefinition(
     ),
     ProviderDefinition(
         id="ai21", name="AI21 Labs", description="Jamba models with long context windows",
-        kind="openai-compatible", base_url="https://api.ai21.com/v1",
+        kind="openai-compatible", base_url="https://api.ai21.com/studio/v1",
         default_model="jamba-1.5-large", aliases=[], icon="A21",
+    ),
+    ProviderDefinition(
+        id="ollie-qwen", name="OllieAPI",
+        description="Free Qwen3.8-Max by WeirdMM.",
+        kind="openai-compatible", base_url="https://qwen3-8-api.vercel.app/v1",
+        default_model="qwen3.8-max-preview",
+        aliases=["ollie", "qwen"],
+        popular=True, icon="OLQ",
     ),
     ProviderDefinition(
         id="databricks", name="Databricks", description="Serving endpoints for fine-tuned models (set base URL to your workspace)",
         kind="openai-compatible", base_url="https://dbc-xxxxxxxx.cloud.databricks.com/serving-endpoints",
         default_model="databricks-dbrx-instruct",
         aliases=[], icon="DBS",
-    ),
-    ProviderDefinition(
-        id="replicate", name="Replicate", description="Run open-source models in the cloud",
-        kind="openai-compatible", base_url="https://api.replicate.com/v1",
-        default_model="meta/llama-2-70b-chat", aliases=[], icon="RPL",
     ),
     ProviderDefinition(
         id="siliconflow", name="SiliconFlow", description="Cost-effective inference for 200+ models",
@@ -230,8 +229,8 @@ ProviderDefinition(
     ),
     ProviderDefinition(
         id="lambda", name="Lambda Labs", description="GPU cloud for AI training and inference",
-        kind="openai-compatible", base_url="https://api.lambdalabs.com/v1",
-        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["lambda-labs"], icon="LDA",
+        kind="openai-compatible", base_url="https://api.lambda.ai/v1",
+        default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=["lambda-labs", "lambda-ai"], icon="LDA",
     ),
     ProviderDefinition(
         id="kluster", name="Kluster AI", description="Distributed GPU network for inference",
@@ -245,7 +244,7 @@ ProviderDefinition(
     ),
     ProviderDefinition(
         id="yi", name="Yi (01.AI)", description="Yi-Large and Yi-34B models",
-        kind="openai-compatible", base_url="https://api.01.ai/v1",
+        kind="openai-compatible", base_url="https://api.lingyiwanwu.com/v1",
         default_model="yi-large", aliases=["01-ai", "yi-ai"], icon="YI",
     ),
     ProviderDefinition(
@@ -259,12 +258,6 @@ ProviderDefinition(
         default_model="hunyuan-turbos-latest", aliases=["tencent"], icon="HUN",
     ),
     ProviderDefinition(
-        id="cloudflare-ai", name="Cloudflare Workers AI", description="Serverless AI inference at the edge",
-        kind="openai-compatible", base_url="https://api.cloudflare.com/client/v4",
-        default_model="@cf/meta/llama-3.1-70b-instruct",
-        aliases=["cf-ai"], icon="CFL",
-    ),
-    ProviderDefinition(
         id="monsterapi", name="Monster API", description="Affordable GPU inference for open models",
         kind="openai-compatible", base_url="https://api.monsterapi.ai/v1",
         default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="MST",
@@ -273,11 +266,6 @@ ProviderDefinition(
         id="baseten", name="Baseten", description="Model deployment and serving platform",
         kind="openai-compatible", base_url="https://inference.baseten.co/v1",
         default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="BST",
-    ),
-    ProviderDefinition(
-        id="anyscale", name="Anyscale", description="Ray-based scalable model serving",
-        kind="openai-compatible", base_url="https://api.endpoints.anyscale.com/v1",
-        default_model="meta-llama/Llama-3.1-70B-Instruct", aliases=[], icon="ANY",
     ),
     ProviderDefinition(
         id="jan", name="Jan", description="Local AI model server with web UI",
@@ -290,29 +278,13 @@ ProviderDefinition(
         default_model="local", aliases=["llama-cpp"], auth_method="none", icon="LPP",
     ),
     ProviderDefinition(
-        id="watsonx", name="IBM Watsonx", description="Enterprise AI platform with Granite models",
-        kind="openai-compatible", base_url="https://us-south.ml.cloud.ibm.com",
-        default_model="ibm/granite-3-8b-instruct",
-        aliases=["ibm"], icon="IBM",
-    ),
-    ProviderDefinition(
         id="aleph-alpha", name="Aleph Alpha", description="European sovereign AI Luminous models",
-        kind="openai-compatible", base_url="https://api.aleph-alpha.eu/v1",
+        kind="openai-compatible", base_url="https://api.aleph-alpha.com/v1",
         default_model="luminous-supreme-control", aliases=[], icon="ALP",
     ),
     ProviderDefinition(
-        id="predibase", name="Predibase", description="Fine-tune and serve open-source LLMs",
-        kind="openai-compatible", base_url="https://serving.app.predibase.com/v1",
-        default_model="meta-llama/Meta-Llama-3.1-8B-Instruct", aliases=[], icon="PDB",
-    ),
-    ProviderDefinition(
-        id="gravity", name="Gravity API", description="Multi-model API gateway",
-        kind="openai-compatible", base_url="https://api.gravityapi.com/v1",
-        default_model="auto", aliases=[], icon="GRV",
-    ),
-    ProviderDefinition(
         id="infermatic", name="Infermatic", description="Fast inference for popular open models",
-        kind="openai-compatible", base_url="https://api.infermatic.ai/v1",
+        kind="openai-compatible", base_url="https://api.totalgpt.ai/v1",
         default_model="meta-llama/Meta-Llama-3.1-70B-Instruct", aliases=[], icon="INF",
     ),
 ]

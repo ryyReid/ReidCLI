@@ -24,7 +24,6 @@ from reidx.diagnostics.logger import get_logger
 from reidx.provider.anthropic import AnthropicProvider
 from reidx.provider.base import BaseProvider
 from reidx.provider.models import (
-    denormalize_model_id,
     normalize_model_id,
     validate_model_against_provider,
 )
@@ -35,6 +34,19 @@ from reidx.provider.registry import ProviderRegistry
 log = get_logger("reidx.provider.store")
 
 SUPPORTED_KINDS = ("anthropic", "openai", "openai-compatible", "ollama")
+
+
+def _try_refresh_oauth(kind: str, refresh_token: str):
+    try:
+        from reidx.provider.oauth import create_oauth_client
+
+        client = create_oauth_client(kind)
+        if client is None:
+            return None
+        return client.refresh_tokens(refresh_token)
+    except Exception:
+        log.debug("oauth refresh failed for %s", kind, exc_info=True)
+        return None
 
 
 @dataclass
@@ -187,8 +199,6 @@ def validate_provider(
             is_valid, msg = validate_model_against_provider(normalized, models)
             if not is_valid:
                 return False, f"model validation failed: {msg}"
-            # Update the record with the normalized model ID
-            record.default_model = denormalize_model_id(normalized)
     
     if models:
         return True, f"ok ({len(models)} models available)"
@@ -253,6 +263,15 @@ def load_from_database(registry: ProviderRegistry, storage_root: Path) -> list[s
 
         api_key = sp.decrypted_api_key()
         oauth = getattr(sp, "oauth_tokens", None)
+        if oauth and oauth.refresh_token and oauth.is_expired():
+            refreshed = _try_refresh_oauth(sp.kind, oauth.refresh_token)
+            if refreshed is not None:
+                sp.oauth_tokens = refreshed
+                oauth = refreshed
+                db.save_provider(sp)
+                log.info("refreshed OAuth token for %s on startup", sp.name)
+            else:
+                log.warning("OAuth token for %s expired and refresh failed — re-run /connect", sp.name)
         oauth_access = sp.decrypted_oauth_access_token() if hasattr(sp, "decrypted_oauth_access_token") else ""
         oauth_refresh = oauth.refresh_token if oauth else ""
         oauth_expires = int(oauth.expires_at) if oauth else 0

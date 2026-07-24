@@ -18,6 +18,8 @@ from reidx.provider.stub import StubProvider
 
 log = get_logger("reidx.provider")
 
+_OLLIE_QWEN_DEFAULT_KEY = "qwen_sk_d86c477e9968910ff84df146c803c00e1b125472a4b0fec6"
+
 
 def _norm_key(name: str) -> str:
     """Alphanumeric-only lowercase key: 'NVIDIA NIM' / 'nvidia-nim' → 'nvidianim'."""
@@ -143,7 +145,7 @@ def default_registry(config: Config) -> ProviderRegistry:
         )
         go_base = (
             os.environ.get("OPENCODE_GO_BASE_URL", "").strip()
-            or "https://opencode.ai/zen/go/v1"
+            or "https://opencode.ai/zen/v1"
         )
         reg.register(
             "OpenCode Go",
@@ -155,6 +157,20 @@ def default_registry(config: Config) -> ProviderRegistry:
             aliases=["opencode-go", "opencode", "zen-go", "go"],
         )
         log.debug("auto-registered OpenCode Go provider from env vars")
+
+    ollie_key = os.environ.get("OLLIE_QWEN_API_KEY", "").strip() or _OLLIE_QWEN_DEFAULT_KEY
+    ollie_base = os.environ.get("OLLIE_QWEN_BASE_URL", "").strip() or "https://qwen3-8-api.vercel.app/v1"
+    ollie_model = os.environ.get("OLLIE_QWEN_MODEL", "").strip() or "qwen3.8-max-preview"
+    reg.register(
+        "Ollie Qwen 3.8Max",
+        OpenAICompatibleProvider(
+            api_key=ollie_key,
+            base_url=ollie_base,
+            default_model=ollie_model,
+        ),
+        aliases=["ollie-qwen", "ollie", "qwen3.8", "qwen-max", "ollie-qwen-3.8max"],
+    )
+    log.debug("auto-registered Ollie Qwen 3.8Max provider")
 
     for name, pc in config.providers.items():
         if name == "stub" or name in reg.names():
@@ -218,6 +234,9 @@ def pick_startup_provider(registry: ProviderRegistry, preferred: str = "") -> st
         "openai",
         "ollama",
         "openrouter",
+        "Ollie Qwen 3.8Max",
+        "ollie-qwen",
+        "ollie",
         "NVIDIA NIM",
         "nvidia",
         "nvidia-nim",
