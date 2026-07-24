@@ -119,7 +119,7 @@ def _orch(ctx: ToolContext):
     return ctx.extra.get("orchestrator")
 
 
-def _storage_root(orch) -> "Path":  # noqa: F821
+def _storage_root(orch) -> Path:  # noqa: F821
     from pathlib import Path
 
     from reidx.config.storage import storage_root as default_root
@@ -339,7 +339,6 @@ class ConnectProviderTool(BaseTool):
         from reidx.provider.store import ProviderRecord, build_provider
         from reidx.provider_manager import keychain
         from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
-        from reidx.provider.oauth import OAuthTokens
 
         root = _storage_root(orch)
         db = ProviderDatabase(root)

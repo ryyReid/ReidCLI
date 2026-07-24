@@ -22,7 +22,6 @@ from reidx.provider_manager.catalog import (
     search as catalog_search,
 )
 from reidx.provider_manager.database import ProviderDatabase, StoredKey, StoredProvider
-from reidx.provider.oauth import run_browser_oauth, run_device_oauth
 
 log = get_logger("reidx.provider_manager.palette")
 

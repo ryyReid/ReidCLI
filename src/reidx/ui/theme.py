@@ -111,11 +111,6 @@ def content_width(*, margin: int = 2, cap: int | None = None) -> int:
     return w
 
 
-# Context windows live in provider.context_windows (full table + live API cache).
-# Re-export so existing `from reidx.ui.theme import context_window_for` keeps working.
-from reidx.provider.context_windows import DEFAULT_CONTEXT_WINDOW, context_window_for  # noqa: F401
-
-
 def fmt_tokens(n: int) -> str:
     """Human token counts for the status bar (1.0M, 128.0k, 512)."""
     if n >= 1_000_000:

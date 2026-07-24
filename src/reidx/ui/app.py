@@ -1258,6 +1258,7 @@ class ChatApp:
         self._history = self._make_input_history()
         self._thinking = {"flag": False, "start": 0.0, "gerund": "", "last_swap": 0.0}
         self._cancel_event: threading.Event | None = None
+        self._interrupt_armed_at = 0.0
         self._approving: dict = {"flag": False, "prompt": "", "result": False, "event": None}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._initial_prompt = (initial_prompt or "").strip()
@@ -1774,7 +1775,6 @@ class ChatApp:
 
     def _build_status_fragments(self):  # type: ignore[no-untyped-def]
         """One compact footer line that fits the terminal (no wrap/clip mess)."""
-        from reidx.ui.theme import content_width
 
         status = self._status()
         window = status.get("context_window", 0)
@@ -1784,8 +1784,6 @@ class ChatApp:
         mode = status.get("mode", "—")
         mode_color = _MODE_COLOR.get(mode, "#9e9e9e")
         model = str(status.get("model") or "—")
-        # Truncate long model ids so the bar stays one line on narrow panes.
-        cols = content_width(margin=4)
         if len(model) > 28:
             model = model[:25] + "…"
         sep = ("#6c6c6c", " · ")
@@ -2194,6 +2192,12 @@ class ChatApp:
 
         @kb.add("c-c", filter=~is_palette)
         def _copy_or_clear(event) -> None:  # type: ignore[no-untyped-def]
+            # Ctrl-C priority (matches Claude Code / terminal muscle memory):
+            #   1) finalize an in-progress drag-selection → copy
+            #   2) copy an existing selection
+            #   3) interrupt a running turn
+            #   4) clear a non-empty input box
+            #   5) double-tap within 1.5s on an idle empty prompt → exit
             # Prefer copy when the transcript has a selection (hover/drag copy UX).
             if self.output.selecting:
                 finish_output_selection(
@@ -2202,13 +2206,31 @@ class ChatApp:
                     on_selection_changed=self._on_selection_changed,
                 )
                 if self.output.selected_text().strip():
+                    self._interrupt_armed_at = 0.0
                     return
             selected = self.output.selected_text()
             if selected.strip():
                 self._copy_selection(selected)
+                self._interrupt_armed_at = 0.0
+                return
+            # Interrupt an in-flight response — Ctrl-C is the reflex for "stop".
+            if self._thinking["flag"] and self._cancel_event is not None:
+                self._cancel_event.set()
+                self._interrupt_armed_at = 0.0
                 return
             if self._buf.text:
                 self._buf.reset()
+                self._interrupt_armed_at = 0.0
+                return
+            # Nothing to copy/cancel/clear: double Ctrl-C exits.
+            now = time.monotonic()
+            if now - self._interrupt_armed_at <= 1.5:
+                self.app.exit(result=0)
+                return
+            self._interrupt_armed_at = now
+            self._append_output(
+                lambda: render.print_info("Press Ctrl+C again to exit (or Ctrl+D)")
+            )
 
         # Ctrl+Y = yank last AI reply. (Ctrl+Shift+C is not a valid
         # prompt_toolkit key name and is also stolen by many terminals.)

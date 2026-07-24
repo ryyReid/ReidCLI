@@ -8,11 +8,11 @@ from reidx.tools.file_tools import (
     WriteFileTool,
     register_file_tools,
 )
-from reidx.tools.registry import ToolRegistry
 from reidx.tools.provider_tools import (
     ConnectProviderTool,
     register_provider_tools,
 )
+from reidx.tools.registry import ToolRegistry
 from reidx.tools.session_tools import SetContextWindowTool, register_session_tools
 from reidx.tools.shell_tool import RunCommandTool, register_shell_tool
 from reidx.tools.spawn_agent import SpawnAgentTool, register_spawn_agent

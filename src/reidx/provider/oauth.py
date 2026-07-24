@@ -10,11 +10,11 @@ import hashlib
 import os
 import secrets
 import time
-import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import Any, Callable, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -132,10 +132,10 @@ class LocalCallbackServer:
     def __init__(self, port: int, handler: Callable[[dict], None]):
         self.port = port
         self.handler = handler
-        self.server: Optional[HTTPServer] = None
-        self.thread: Optional[Thread] = None
-        self._code: Optional[str] = None
-        self._error: Optional[str] = None
+        self.server: HTTPServer | None = None
+        self.thread: Thread | None = None
+        self._code: str | None = None
+        self._error: str | None = None
 
     def start(self) -> None:
         class CallbackHandler(BaseHTTPRequestHandler):
@@ -184,7 +184,7 @@ class LocalCallbackServer:
         if self.thread:
             self.thread.join(timeout=1)
 
-    def wait_for_callback(self, timeout: int = 120) -> tuple[Optional[str], Optional[str]]:
+    def wait_for_callback(self, timeout: int = 120) -> tuple[str | None, str | None]:
         start = time.time()
         while time.time() - start < timeout:
             if self._code or self._error:
@@ -294,7 +294,7 @@ class OAuthClient:
             interval=int(data.get("interval", 5)),
         )
 
-    def poll_device_token(self, device_code: str) -> Optional[OAuthTokens]:
+    def poll_device_token(self, device_code: str) -> OAuthTokens | None:
         if not self.config.device_endpoint:
             return None
 
@@ -327,7 +327,7 @@ class OAuthClient:
         encrypted = encrypt(str(tokens.to_dict()))
         os.environ[f"REIDX_OAUTH_{self.storage_key}"] = encrypted
 
-    def load_tokens(self) -> Optional[OAuthTokens]:
+    def load_tokens(self) -> OAuthTokens | None:
         from reidx.provider_manager.keychain import decrypt
         encrypted = os.environ.get(f"REIDX_OAUTH_{self.storage_key}")
         if not encrypted:
@@ -339,7 +339,7 @@ class OAuthClient:
             return None
 
 
-def create_oauth_client(provider_kind: str) -> Optional[OAuthClient]:
+def create_oauth_client(provider_kind: str) -> OAuthClient | None:
     configs = {
         "openai": (OAuthProvider.OPEN_AI, "OPENAI"),
     }
@@ -349,7 +349,7 @@ def create_oauth_client(provider_kind: str) -> Optional[OAuthClient]:
     return OAuthClient(config, key)
 
 
-def run_browser_oauth(provider_kind: str) -> Optional[OAuthTokens]:
+def run_browser_oauth(provider_kind: str) -> OAuthTokens | None:
     client = create_oauth_client(provider_kind)
     if not client:
         return None
@@ -380,7 +380,7 @@ def run_browser_oauth(provider_kind: str) -> Optional[OAuthTokens]:
         server.stop()
 
 
-def run_device_oauth(provider_kind: str, on_user_code: Callable[[str, str], None]) -> Optional[OAuthTokens]:
+def run_device_oauth(provider_kind: str, on_user_code: Callable[[str, str], None]) -> OAuthTokens | None:
     client = create_oauth_client(provider_kind)
     if not client or not client.config.device_endpoint:
         return None

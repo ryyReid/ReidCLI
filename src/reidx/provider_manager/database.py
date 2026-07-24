@@ -6,7 +6,6 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from reidx.diagnostics.logger import get_logger
 from reidx.provider_manager import keychain
@@ -84,7 +83,7 @@ class StoredProvider:
     catalog_id: str | None = None
     keys: list[StoredKey] = field(default_factory=list)
     active_key_id: str | None = None
-    oauth_tokens: Optional[OAuthTokens] = None
+    oauth_tokens: OAuthTokens | None = None
 
     def active_key(self) -> StoredKey | None:
         if not self.active_key_id:
